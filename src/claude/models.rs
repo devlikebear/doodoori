@@ -10,6 +10,17 @@ pub enum ModelAlias {
     Opus,
 }
 
+impl ModelAlias {
+    /// Convert alias to full model ID
+    pub fn to_model_id(&self) -> &'static str {
+        match self {
+            ModelAlias::Haiku => "claude-haiku-4-5-20251101",
+            ModelAlias::Sonnet => "claude-sonnet-4-5-20251101",
+            ModelAlias::Opus => "claude-opus-4-5-20251101",
+        }
+    }
+}
+
 impl fmt::Display for ModelAlias {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -59,5 +70,12 @@ mod tests {
     #[test]
     fn test_default_model() {
         assert_eq!(ModelAlias::default(), ModelAlias::Sonnet);
+    }
+
+    #[test]
+    fn test_model_to_id() {
+        assert_eq!(ModelAlias::Haiku.to_model_id(), "claude-haiku-4-5-20251101");
+        assert_eq!(ModelAlias::Sonnet.to_model_id(), "claude-sonnet-4-5-20251101");
+        assert_eq!(ModelAlias::Opus.to_model_id(), "claude-opus-4-5-20251101");
     }
 }
