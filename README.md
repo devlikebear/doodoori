@@ -20,6 +20,8 @@ Named after **Doodoori (두두리, 豆豆里)**, the Silla dynasty's blacksmith 
 - **Spec File System**: Markdown-based task specifications with validation
 - **Sandbox Mode**: Docker-based isolated execution environment
 - **Parallel Execution**: Run multiple tasks concurrently with worker pool
+- **Workflow System**: YAML-based complex workflow definitions with DAG scheduling
+- **TUI Dashboard**: Real-time monitoring dashboard (optional feature)
 
 ## Installation
 
@@ -152,6 +154,87 @@ doodoori parallel --dry-run --task "Task A" --task "Task B"
 - Fail-fast mode for critical tasks
 - Budget limit across all tasks
 
+## Workflows
+
+Define complex multi-step workflows with YAML:
+
+```yaml
+# workflow.yaml
+name: "Full Stack Development"
+
+global:
+  default_model: sonnet
+  max_parallel_workers: 4
+  budget_usd: 20.00
+
+steps:
+  - name: "Project Setup"
+    prompt: "Initialize TypeScript project"
+    model: haiku
+    parallel_group: 0
+    budget_usd: 1.00
+
+  - name: "Backend API"
+    prompt: "Implement REST API"
+    parallel_group: 1
+    depends_on: ["Project Setup"]
+    budget_usd: 5.00
+
+  - name: "Frontend UI"
+    prompt: "Create React frontend"
+    parallel_group: 1
+    depends_on: ["Project Setup"]
+    budget_usd: 5.00
+
+  - name: "Integration"
+    prompt: "Connect frontend to backend"
+    model: haiku
+    parallel_group: 2
+    depends_on: ["Backend API", "Frontend UI"]
+```
+
+```bash
+# Run a workflow
+doodoori workflow run workflow.yaml
+
+# Preview execution plan
+doodoori workflow run --dry-run workflow.yaml
+
+# Validate a workflow
+doodoori workflow validate workflow.yaml
+
+# Show workflow details
+doodoori workflow info workflow.yaml
+```
+
+**Workflow features:**
+- YAML-based workflow definitions
+- DAG-based dependency resolution
+- Parallel group execution
+- Per-step model and budget settings
+- Circular dependency detection
+- Execution plan preview
+
+## TUI Dashboard
+
+Monitor running tasks with the TUI dashboard (requires `dashboard` feature):
+
+```bash
+# Build with dashboard support
+cargo build --release --features dashboard
+
+# Launch dashboard
+doodoori dashboard
+
+# With custom refresh interval
+doodoori dashboard --refresh 1000
+```
+
+**Dashboard features:**
+- Real-time task monitoring
+- Cost summary view
+- Keyboard navigation (Tab, q to quit)
+
 ## Configuration
 
 Create a `doodoori.toml` in your project root:
@@ -189,6 +272,11 @@ workers = 3
 | `doodoori parallel --task "A" --task "B"` | Run tasks in parallel |
 | `doodoori parallel --isolate --task "A"` | Parallel with task isolation |
 | `doodoori parallel --dry-run --task "A"` | Preview parallel execution plan |
+| `doodoori workflow run <file.yaml>` | Run a workflow |
+| `doodoori workflow run --dry-run <file>` | Preview workflow execution |
+| `doodoori workflow validate <file.yaml>` | Validate a workflow |
+| `doodoori workflow info <file.yaml>` | Show workflow details |
+| `doodoori dashboard` | Launch TUI dashboard |
 | `doodoori spec <description>` | Generate a spec file |
 | `doodoori spec --validate <file.md>` | Validate a spec file |
 | `doodoori spec --info <file.md>` | Show parsed spec information |
@@ -260,7 +348,7 @@ doodoori spec --validate api-spec.md
 - [x] Phase 3: Sandbox mode with Docker
 - [x] Phase 4: State management, secrets, and resume
 - [x] Phase 5: Parallel execution
-- [ ] Phase 6: Workflows and TUI dashboard
+- [x] Phase 6: Workflows and TUI dashboard
 
 ## License
 

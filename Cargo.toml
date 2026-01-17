@@ -1,6 +1,6 @@
 [package]
 name = "doodoori"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 description = "Autonomous CLI tool that uses Claude Code internally to complete goals without user intervention"
 authors = ["devlikebear <devlikebear@gmail.com>"]
@@ -19,6 +19,7 @@ tokio = { version = "1.43", features = ["rt-multi-thread", "macros", "process", 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_yaml = "0.9"
 toml = "0.8"
 
 # Error handling

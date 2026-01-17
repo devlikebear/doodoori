@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-01-17
+
+### Added
+
+- **Workflow System**: YAML-based complex workflow definitions
+  - `WorkflowDefinition` with global settings and steps
+  - `WorkflowStep` with dependencies, models, and budgets
+  - DAG-based scheduler with topological ordering
+  - Circular dependency detection
+  - Step validation and parallel group execution
+
+- **DAG Scheduler**: Dependency-based task orchestration
+  - `DagScheduler` for managing workflow execution order
+  - `topological_order()` for correct execution sequence
+  - `get_ready_steps()` for parallel-safe step retrieval
+  - `get_execution_groups()` for group-based execution
+
+- **Workflow CLI Commands**
+  - `doodoori workflow run <file.yaml>` to execute workflows
+  - `doodoori workflow run --dry-run` for execution preview
+  - `doodoori workflow validate <file.yaml>` for validation
+  - `doodoori workflow info <file.yaml>` for details
+  - `doodoori workflow resume <id>` for resuming (placeholder)
+
+- **TUI Dashboard** (optional `dashboard` feature)
+  - Real-time task monitoring
+  - Cost summary view
+  - Help tab with keyboard shortcuts
+  - Requires `cargo build --features dashboard`
+
+### Changed
+
+- Added `serde_yaml` dependency for workflow parsing
+
+### Tests
+
+- 148 unit tests (10 new tests for workflow module)
+
 ## [0.6.0] - 2026-01-17
 
 ### Added

@@ -1,7 +1,9 @@
 pub mod cost;
+pub mod dashboard;
 pub mod parallel;
 pub mod resume;
 pub mod run;
 pub mod sandbox;
 pub mod secret;
 pub mod spec;
+pub mod workflow;

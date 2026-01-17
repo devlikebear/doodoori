@@ -4,8 +4,8 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use commands::{
-    cost::CostArgs, parallel::ParallelArgs, resume::ResumeArgs, run::RunArgs,
-    sandbox::SandboxArgs, secret::SecretArgs, spec::SpecArgs,
+    cost::CostArgs, dashboard::DashboardArgs, parallel::ParallelArgs, resume::ResumeArgs,
+    run::RunArgs, sandbox::SandboxArgs, secret::SecretArgs, spec::SpecArgs, workflow::WorkflowArgs,
 };
 
 /// Doodoori - Autonomous CLI tool powered by Claude Code
@@ -52,6 +52,12 @@ pub enum Commands {
     /// View cost history and tracking
     Cost(CostArgs),
 
+    /// Run and manage workflows
+    Workflow(WorkflowArgs),
+
+    /// Launch the TUI dashboard
+    Dashboard(DashboardArgs),
+
     /// Show current configuration
     Config,
 
@@ -78,6 +84,8 @@ impl Cli {
             Commands::Resume(args) => args.execute().await,
             Commands::Secret(args) => args.execute().await,
             Commands::Cost(args) => args.execute().await,
+            Commands::Workflow(args) => args.execute().await,
+            Commands::Dashboard(args) => args.execute().await,
             Commands::Config => {
                 println!("Config file: {}", self.config);
                 // TODO: Load and display config

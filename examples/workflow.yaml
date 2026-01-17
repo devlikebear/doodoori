@@ -1,0 +1,49 @@
+name: "Full Stack Development"
+
+global:
+  default_model: sonnet
+  max_parallel_workers: 4
+  budget_usd: 20.00
+  completion_promise: "COMPLETE"
+
+steps:
+  - name: "Project Setup"
+    prompt: "Initialize project with TypeScript"
+    model: haiku
+    parallel_group: 0
+    max_iterations: 10
+    budget_usd: 1.00
+
+  - name: "Backend API"
+    prompt: "Implement REST API with Express"
+    model: sonnet
+    parallel_group: 1
+    depends_on: ["Project Setup"]
+    budget_usd: 5.00
+
+  - name: "Frontend UI"
+    prompt: "Create React frontend"
+    parallel_group: 1
+    depends_on: ["Project Setup"]
+    budget_usd: 5.00
+
+  - name: "Database Schema"
+    prompt: "Design PostgreSQL schema"
+    model: opus
+    parallel_group: 1
+    depends_on: ["Project Setup"]
+    budget_usd: 3.00
+
+  - name: "API Integration"
+    prompt: "Connect frontend to backend"
+    model: haiku
+    parallel_group: 2
+    depends_on: ["Backend API", "Frontend UI", "Database Schema"]
+    budget_usd: 2.00
+
+  - name: "Testing"
+    prompt: "Write unit and integration tests"
+    model: opus
+    parallel_group: 3
+    depends_on: ["API Integration"]
+    budget_usd: 4.00
