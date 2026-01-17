@@ -30,6 +30,14 @@ pub struct RunArgs {
     #[arg(long)]
     pub sandbox: bool,
 
+    /// Docker image for sandbox mode
+    #[arg(long, default_value = "doodoori/sandbox:latest")]
+    pub image: String,
+
+    /// Network mode for sandbox (bridge, none, host)
+    #[arg(long, default_value = "bridge")]
+    pub network: String,
+
     /// Dry run - show what would be executed without running
     #[arg(long)]
     pub dry_run: bool,
@@ -87,19 +95,96 @@ impl RunArgs {
         }
 
         if self.sandbox {
-            tracing::info!("Sandbox mode enabled");
+            return self.execute_sandbox(&prompt).await;
         }
 
         if self.yolo {
             tracing::warn!("YOLO mode enabled - all permissions granted!");
         }
 
-        // TODO: Execute with Loop Engine
+        // TODO: Execute with Loop Engine (direct mode)
         println!("🔨 Doodoori is forging your code...");
         println!("Task: {}", prompt);
         println!("Model: {:?}", self.model);
 
         Ok(())
+    }
+
+    #[cfg(feature = "sandbox")]
+    async fn execute_sandbox(&self, prompt: &str) -> Result<()> {
+        use crate::sandbox::{ClaudeOptions, NetworkMode, SandboxConfig, SandboxRunner};
+
+        println!("🐳 Initializing Docker sandbox...");
+
+        // Parse network mode
+        let network = match self.network.to_lowercase().as_str() {
+            "none" => NetworkMode::None,
+            "host" => NetworkMode::Host,
+            _ => NetworkMode::Bridge,
+        };
+
+        // Get current working directory
+        let workspace = std::env::current_dir()?;
+
+        // Build sandbox configuration
+        let config = SandboxConfig::builder()
+            .image(&self.image)
+            .network(network)
+            .workspace(&workspace)
+            .mount_claude_config(true)
+            .build();
+
+        // Create and initialize runner
+        let mut runner = SandboxRunner::with_config(config)?;
+        runner.init().await?;
+
+        println!("📦 Sandbox container started: {}", runner.container_id().unwrap_or("unknown"));
+        println!("🔨 Executing Claude Code in sandbox...");
+        println!("   Image: {}", self.image);
+        println!("   Network: {}", self.network);
+        println!("   Workspace: {}", workspace.display());
+
+        // Build Claude options
+        let options = ClaudeOptions::new()
+            .model(self.model.to_string());
+
+        let options = if self.yolo {
+            options.yolo()
+        } else {
+            options
+        };
+
+        // Execute Claude
+        let result = runner.run_claude(prompt, &options).await?;
+
+        // Print output
+        if !result.output.stdout.is_empty() {
+            println!("\n--- Output ---");
+            println!("{}", result.output.stdout);
+        }
+
+        if !result.output.stderr.is_empty() {
+            eprintln!("\n--- Errors ---");
+            eprintln!("{}", result.output.stderr);
+        }
+
+        println!("\n--- Result ---");
+        println!("Exit code: {}", result.output.exit_code);
+        println!("Success: {}", result.success);
+
+        // Cleanup
+        runner.cleanup().await?;
+        println!("🧹 Sandbox cleaned up");
+
+        Ok(())
+    }
+
+    #[cfg(not(feature = "sandbox"))]
+    async fn execute_sandbox(&self, _prompt: &str) -> Result<()> {
+        anyhow::bail!(
+            "Sandbox feature is not enabled. Rebuild with --features sandbox:\n\
+             cargo build --features sandbox"
+        )
     }
 
     async fn execute_dry_run(&self) -> Result<()> {
@@ -134,6 +219,8 @@ impl RunArgs {
         println!("\n[Execution Mode]");
         if self.sandbox {
             println!("  Sandbox (Docker)");
+            println!("    Image: {}", self.image);
+            println!("    Network: {}", self.network);
         } else {
             println!("  Direct (local)");
         }

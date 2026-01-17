@@ -13,6 +13,7 @@ Named after **Doodoori (두두리, 豆豆里)**, the Silla dynasty's blacksmith 
 - **Dry Run Mode**: Preview what would be executed without running
 - **Permission Control**: YOLO mode, read-only mode, and custom allowed tools
 - **Spec File System**: Markdown-based task specifications with validation
+- **Sandbox Mode**: Docker-based isolated execution environment
 
 ## Installation
 
@@ -41,7 +42,45 @@ doodoori run --budget 5.0 "Implement user dashboard"
 
 # YOLO mode (skip all permissions)
 doodoori run --yolo "Quick task with full permissions"
+
+# Run in Docker sandbox (requires --features sandbox)
+doodoori run --sandbox "Potentially risky operation"
+
+# Sandbox with network isolation
+doodoori run --sandbox --network none "Completely isolated execution"
 ```
+
+## Sandbox Mode
+
+Sandbox mode runs Claude Code inside a Docker container for isolated execution:
+
+```bash
+# Build with sandbox support
+cargo build --release --features sandbox
+
+# Run in sandbox
+doodoori run --sandbox "Your task here"
+
+# Custom Docker image
+doodoori run --sandbox --image my-custom-image:v1 "Task"
+
+# Network modes
+doodoori run --sandbox --network bridge "Default networking"
+doodoori run --sandbox --network none "No network access"
+doodoori run --sandbox --network host "Host networking"
+```
+
+**Build the sandbox image:**
+```bash
+docker build -t doodoori/sandbox:latest -f docker/Dockerfile.sandbox .
+```
+
+**Sandbox features:**
+- Isolated filesystem (only mounted workspace)
+- Automatic Claude credentials mounting (~/.claude)
+- Environment variable passing (ANTHROPIC_API_KEY)
+- Optional network isolation
+- Non-root execution for security
 
 ## Configuration
 
@@ -75,6 +114,7 @@ workers = 3
 |---------|-------------|
 | `doodoori run <prompt>` | Run a task with Claude Code |
 | `doodoori run --spec <file.md>` | Run from a spec file |
+| `doodoori run --sandbox <prompt>` | Run in Docker sandbox |
 | `doodoori run --dry-run <prompt>` | Preview execution plan |
 | `doodoori spec <description>` | Generate a spec file |
 | `doodoori spec --validate <file.md>` | Validate a spec file |
@@ -134,7 +174,7 @@ doodoori spec --validate api-spec.md
 
 - [x] Phase 1: MVP - Basic execution with Loop Engine
 - [x] Phase 2: Spec file system with markdown parsing
-- [ ] Phase 3: Sandbox mode with Docker
+- [x] Phase 3: Sandbox mode with Docker
 - [ ] Phase 4: State management and resume
 - [ ] Phase 5: Parallel execution
 - [ ] Phase 6: Workflows and TUI dashboard

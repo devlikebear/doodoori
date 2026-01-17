@@ -1,0 +1,52 @@
+# Doodoori Sandbox Image
+# Provides an isolated environment for running Claude Code safely
+#
+# Build: docker build -t doodoori/sandbox:latest -f docker/Dockerfile.sandbox .
+# Run: docker run --rm -it -v $(pwd):/workspace doodoori/sandbox:latest
+
+FROM node:22-slim
+
+# Metadata
+LABEL org.opencontainers.image.title="Doodoori Sandbox"
+LABEL org.opencontainers.image.description="Isolated environment for running Claude Code"
+LABEL org.opencontainers.image.version="1.0.0"
+LABEL org.opencontainers.image.authors="devlikebear <devlikebear@gmail.com>"
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    ca-certificates \
+    build-essential \
+    python3 \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Claude Code CLI globally
+RUN npm install -g @anthropic-ai/claude-code
+
+# Create non-root user for security
+RUN useradd -m -s /bin/bash -u 1000 doodoori \
+    && mkdir -p /workspace \
+    && chown -R doodoori:doodoori /workspace
+
+# Set up home directory structure
+RUN mkdir -p /home/doodoori/.claude \
+    && chown -R doodoori:doodoori /home/doodoori
+
+# Switch to non-root user
+USER doodoori
+
+# Set working directory
+WORKDIR /workspace
+
+# Environment
+ENV HOME=/home/doodoori
+ENV PATH="/home/doodoori/.local/bin:${PATH}"
+
+# Health check - verify claude is available
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD claude --version || exit 1
+
+# Default command - keep container running for exec commands
+CMD ["tail", "-f", "/dev/null"]

@@ -1,0 +1,47 @@
+# Docker Compose for Doodoori Sandbox
+#
+# Usage:
+#   Build: docker-compose -f docker/docker-compose.yml build
+#   Run:   docker-compose -f docker/docker-compose.yml up -d
+#   Exec:  docker-compose -f docker/docker-compose.yml exec sandbox claude -p "Hello"
+#   Down:  docker-compose -f docker/docker-compose.yml down
+
+services:
+  sandbox:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.sandbox
+    image: doodoori/sandbox:latest
+    container_name: doodoori-sandbox
+    volumes:
+      # Mount current project directory as workspace
+      - ..:/workspace:rw
+      # Mount Claude config (read-only for security)
+      - ~/.claude:/home/doodoori/.claude:ro
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - HOME=/home/doodoori
+    working_dir: /workspace
+    # Use bridge network by default (can be overridden)
+    network_mode: bridge
+    # Keep container running
+    tty: true
+    stdin_open: true
+
+  # Isolated sandbox variant (no network access)
+  sandbox-isolated:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.sandbox
+    image: doodoori/sandbox:latest
+    container_name: doodoori-sandbox-isolated
+    volumes:
+      - ..:/workspace:rw
+      - ~/.claude:/home/doodoori/.claude:ro
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - HOME=/home/doodoori
+    working_dir: /workspace
+    network_mode: none
+    tty: true
+    stdin_open: true

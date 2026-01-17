@@ -9,6 +9,7 @@ mod executor;
 mod instructions;
 mod loop_engine;
 mod pricing;
+mod sandbox;
 mod state;
 mod utils;
 
