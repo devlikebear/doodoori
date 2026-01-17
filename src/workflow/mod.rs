@@ -8,7 +8,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::claude::ModelAlias;
 
@@ -339,6 +339,8 @@ pub struct WorkflowState {
     pub workflow_id: String,
     /// Workflow name
     pub name: String,
+    /// Path to the workflow definition file
+    pub workflow_file: PathBuf,
     /// Current status
     pub status: WorkflowStatus,
     /// Current parallel group being executed
@@ -392,7 +394,7 @@ pub enum StepStatus {
 
 impl WorkflowState {
     /// Create a new workflow state
-    pub fn new(workflow_id: String, name: String, steps: &[WorkflowStep]) -> Self {
+    pub fn new(workflow_id: String, name: String, workflow_file: PathBuf, steps: &[WorkflowStep]) -> Self {
         let now = chrono::Utc::now();
         let step_states: HashMap<String, StepState> = steps
             .iter()
@@ -414,12 +416,22 @@ impl WorkflowState {
         Self {
             workflow_id,
             name,
+            workflow_file,
             status: WorkflowStatus::Pending,
             current_group: 0,
             steps: step_states,
             total_cost_usd: 0.0,
             started_at: now,
             updated_at: now,
+        }
+    }
+
+    /// Get a short ID (first 8 characters)
+    pub fn short_id(&self) -> &str {
+        if self.workflow_id.len() >= 8 {
+            &self.workflow_id[..8]
+        } else {
+            &self.workflow_id
         }
     }
 
@@ -453,6 +465,147 @@ impl WorkflowState {
             })
             .map(|(name, _)| name.clone())
             .collect()
+    }
+
+    /// Get completed steps
+    pub fn get_completed_steps(&self) -> Vec<String> {
+        self.steps
+            .iter()
+            .filter(|(_, state)| state.status == StepStatus::Completed)
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+}
+
+/// Manager for workflow state persistence
+pub struct WorkflowStateManager {
+    base_dir: PathBuf,
+}
+
+impl WorkflowStateManager {
+    /// Create a new state manager
+    pub fn new() -> Result<Self> {
+        let base_dir = PathBuf::from(".doodoori/workflow_states");
+        Ok(Self { base_dir })
+    }
+
+    /// Create with custom base directory
+    pub fn with_base_dir(base_dir: PathBuf) -> Self {
+        Self { base_dir }
+    }
+
+    /// Ensure the state directory exists
+    fn ensure_dir(&self) -> Result<()> {
+        std::fs::create_dir_all(&self.base_dir)
+            .with_context(|| format!("Failed to create workflow state directory: {}", self.base_dir.display()))
+    }
+
+    /// Get the path to a workflow state file
+    fn state_path(&self, workflow_id: &str) -> PathBuf {
+        self.base_dir.join(format!("{}.json", workflow_id))
+    }
+
+    /// Save a workflow state
+    pub fn save(&self, state: &WorkflowState) -> Result<()> {
+        self.ensure_dir()?;
+        let path = self.state_path(&state.workflow_id);
+        let content = serde_json::to_string_pretty(state)
+            .context("Failed to serialize workflow state")?;
+        std::fs::write(&path, content)
+            .with_context(|| format!("Failed to write workflow state to {}", path.display()))?;
+        tracing::debug!("Saved workflow state to {}", path.display());
+        Ok(())
+    }
+
+    /// Load a workflow state by ID
+    pub fn load(&self, workflow_id: &str) -> Result<Option<WorkflowState>> {
+        let path = self.state_path(workflow_id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let content = std::fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read workflow state from {}", path.display()))?;
+        let state: WorkflowState = serde_json::from_str(&content)
+            .context("Failed to parse workflow state")?;
+        Ok(Some(state))
+    }
+
+    /// Find a workflow state by prefix
+    pub fn find_by_prefix(&self, prefix: &str) -> Result<Option<WorkflowState>> {
+        if !self.base_dir.exists() {
+            return Ok(None);
+        }
+
+        for entry in std::fs::read_dir(&self.base_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().map_or(false, |e| e == "json") {
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    if stem.starts_with(prefix) {
+                        return self.load(stem);
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// List all workflow states
+    pub fn list(&self) -> Result<Vec<WorkflowState>> {
+        if !self.base_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut states = Vec::new();
+        for entry in std::fs::read_dir(&self.base_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().map_or(false, |e| e == "json") {
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    if let Some(state) = self.load(stem)? {
+                        states.push(state);
+                    }
+                }
+            }
+        }
+        // Sort by updated_at descending (most recent first)
+        states.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(states)
+    }
+
+    /// List resumable workflow states
+    pub fn list_resumable(&self) -> Result<Vec<WorkflowState>> {
+        let states = self.list()?;
+        Ok(states.into_iter().filter(|s| s.can_resume()).collect())
+    }
+
+    /// Delete a workflow state
+    pub fn delete(&self, workflow_id: &str) -> Result<()> {
+        let path = self.state_path(workflow_id);
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("Failed to delete workflow state {}", path.display()))?;
+        }
+        Ok(())
+    }
+
+    /// Clean up completed workflows (optionally archive)
+    pub fn cleanup_completed(&self) -> Result<usize> {
+        let states = self.list()?;
+        let mut count = 0;
+        for state in states {
+            if state.status == WorkflowStatus::Completed {
+                self.delete(&state.workflow_id)?;
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+}
+
+impl Default for WorkflowStateManager {
+    fn default() -> Self {
+        Self::new().expect("Failed to create WorkflowStateManager")
     }
 }
 
@@ -609,6 +762,7 @@ steps:
         let mut state = WorkflowState::new(
             "wf-123".to_string(),
             workflow.name.clone(),
+            PathBuf::from("test.yaml"),
             &workflow.steps,
         );
 
@@ -631,5 +785,88 @@ steps:
         // Step with no model (uses default)
         let frontend_step = workflow.steps.iter().find(|s| s.name == "Frontend UI").unwrap();
         assert_eq!(workflow.get_step_model(frontend_step), ModelAlias::Sonnet);
+    }
+
+    #[test]
+    fn test_workflow_state_manager() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let manager = WorkflowStateManager::with_base_dir(temp_dir.path().to_path_buf());
+
+        let workflow = WorkflowDefinition::parse(SAMPLE_WORKFLOW).unwrap();
+        let state = WorkflowState::new(
+            "test-wf-123".to_string(),
+            workflow.name.clone(),
+            PathBuf::from("workflow.yaml"),
+            &workflow.steps,
+        );
+
+        // Save state
+        manager.save(&state).unwrap();
+
+        // Load state
+        let loaded = manager.load("test-wf-123").unwrap();
+        assert!(loaded.is_some());
+        let loaded = loaded.unwrap();
+        assert_eq!(loaded.workflow_id, "test-wf-123");
+        assert_eq!(loaded.name, "Full Stack Development");
+
+        // List states
+        let states = manager.list().unwrap();
+        assert_eq!(states.len(), 1);
+
+        // Delete state
+        manager.delete("test-wf-123").unwrap();
+        let deleted = manager.load("test-wf-123").unwrap();
+        assert!(deleted.is_none());
+    }
+
+    #[test]
+    fn test_workflow_state_manager_find_by_prefix() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let manager = WorkflowStateManager::with_base_dir(temp_dir.path().to_path_buf());
+
+        let workflow = WorkflowDefinition::parse(SAMPLE_WORKFLOW).unwrap();
+        let state = WorkflowState::new(
+            "abc123def456".to_string(),
+            workflow.name.clone(),
+            PathBuf::from("workflow.yaml"),
+            &workflow.steps,
+        );
+
+        manager.save(&state).unwrap();
+
+        // Find by prefix
+        let found = manager.find_by_prefix("abc123").unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().workflow_id, "abc123def456");
+
+        // Not found
+        let not_found = manager.find_by_prefix("xyz").unwrap();
+        assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn test_workflow_resumable_steps() {
+        let workflow = WorkflowDefinition::parse(SAMPLE_WORKFLOW).unwrap();
+        let mut state = WorkflowState::new(
+            "wf-123".to_string(),
+            workflow.name.clone(),
+            PathBuf::from("test.yaml"),
+            &workflow.steps,
+        );
+
+        // Mark some steps as completed
+        state.update_step("Project Setup", StepStatus::Completed, 0.5, None);
+        state.update_step("Backend API", StepStatus::Failed, 0.2, Some("Error".to_string()));
+
+        let resumable = state.get_resumable_steps();
+        assert!(resumable.contains(&"Backend API".to_string())); // Failed
+        assert!(resumable.contains(&"Frontend UI".to_string())); // Pending
+        assert!(resumable.contains(&"Integration".to_string())); // Pending
+        assert!(!resumable.contains(&"Project Setup".to_string())); // Completed
+
+        let completed = state.get_completed_steps();
+        assert_eq!(completed.len(), 1);
+        assert!(completed.contains(&"Project Setup".to_string()));
     }
 }

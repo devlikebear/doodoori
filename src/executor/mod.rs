@@ -22,6 +22,8 @@ pub struct TaskDefinition {
     pub task_id: String,
     /// The prompt/description for the task
     pub prompt: String,
+    /// Task name (for branch naming)
+    pub name: Option<String>,
     /// Model to use for this task
     pub model: ModelAlias,
     /// Maximum iterations for this task
@@ -32,6 +34,8 @@ pub struct TaskDefinition {
     pub working_dir: Option<PathBuf>,
     /// YOLO mode (skip permissions)
     pub yolo_mode: bool,
+    /// Git branch associated with this task (set when using worktrees)
+    pub git_branch: Option<String>,
 }
 
 impl TaskDefinition {
@@ -40,12 +44,20 @@ impl TaskDefinition {
         Self {
             task_id: Uuid::new_v4().to_string(),
             prompt: prompt.into(),
+            name: None,
             model: ModelAlias::Sonnet,
             max_iterations: 50,
             budget_limit: None,
             working_dir: None,
             yolo_mode: false,
+            git_branch: None,
         }
+    }
+
+    /// Set the task name (used for branch naming)
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
     }
 
     /// Set the model for this task
@@ -75,6 +87,12 @@ impl TaskDefinition {
     /// Set YOLO mode
     pub fn with_yolo_mode(mut self, enabled: bool) -> Self {
         self.yolo_mode = enabled;
+        self
+    }
+
+    /// Set the git branch name for this task (used with git worktrees)
+    pub fn with_git_branch(mut self, branch: impl Into<String>) -> Self {
+        self.git_branch = Some(branch.into());
         self
     }
 }
@@ -190,6 +208,14 @@ pub struct ParallelConfig {
     pub base_working_dir: Option<PathBuf>,
     /// Enable task isolation (separate workspace per task)
     pub task_isolation: bool,
+    /// Use git worktrees for task isolation
+    pub use_git_worktrees: bool,
+    /// Branch prefix for git worktrees (e.g., "feature/", "task/")
+    pub git_branch_prefix: String,
+    /// Auto-commit changes on task completion
+    pub git_auto_commit: bool,
+    /// Auto-create PR on task completion
+    pub git_auto_pr: bool,
 }
 
 impl Default for ParallelConfig {
@@ -201,6 +227,10 @@ impl Default for ParallelConfig {
             sandbox: false,
             base_working_dir: None,
             task_isolation: false,
+            use_git_worktrees: false,
+            git_branch_prefix: "task/".to_string(),
+            git_auto_commit: false,
+            git_auto_pr: false,
         }
     }
 }
@@ -245,6 +275,33 @@ impl ParallelExecutor {
     /// Set base working directory
     pub fn with_base_dir(mut self, dir: PathBuf) -> Self {
         self.config.base_working_dir = Some(dir);
+        self
+    }
+
+    /// Enable git worktrees for task isolation
+    pub fn with_git_worktrees(mut self, enabled: bool) -> Self {
+        self.config.use_git_worktrees = enabled;
+        if enabled {
+            self.config.task_isolation = true; // Worktrees imply isolation
+        }
+        self
+    }
+
+    /// Set git branch prefix for worktrees
+    pub fn with_git_branch_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.config.git_branch_prefix = prefix.into();
+        self
+    }
+
+    /// Enable auto-commit on task completion
+    pub fn with_git_auto_commit(mut self, enabled: bool) -> Self {
+        self.config.git_auto_commit = enabled;
+        self
+    }
+
+    /// Enable auto-PR creation on task completion
+    pub fn with_git_auto_pr(mut self, enabled: bool) -> Self {
+        self.config.git_auto_pr = enabled;
         self
     }
 
@@ -480,7 +537,18 @@ impl ParallelExecutor {
 /// Workspace manager for task isolation
 pub struct WorkspaceManager {
     base_dir: PathBuf,
-    workspaces: HashMap<String, PathBuf>,
+    workspaces: HashMap<String, WorkspaceInfo>,
+}
+
+/// Information about a task workspace
+#[derive(Debug, Clone)]
+pub struct WorkspaceInfo {
+    /// Path to the workspace
+    pub path: PathBuf,
+    /// Git branch name (if using worktrees)
+    pub branch: Option<String>,
+    /// Whether this is a git worktree
+    pub is_worktree: bool,
 }
 
 impl WorkspaceManager {
@@ -503,20 +571,59 @@ impl WorkspaceManager {
             .await
             .context("Failed to create workspace directory")?;
 
-        self.workspaces.insert(task_id.to_string(), workspace_dir.clone());
+        self.workspaces.insert(task_id.to_string(), WorkspaceInfo {
+            path: workspace_dir.clone(),
+            branch: None,
+            is_worktree: false,
+        });
         Ok(workspace_dir)
+    }
+
+    /// Create a git worktree workspace for a task
+    pub fn create_worktree_workspace(
+        &mut self,
+        task_id: &str,
+        task_name: &str,
+        branch_prefix: &str,
+    ) -> Result<(PathBuf, String)> {
+        use crate::git::worktree::WorktreeManager as GitWorktreeManager;
+
+        let worktree_manager = GitWorktreeManager::with_default_dir(&self.base_dir)
+            .context("Failed to create worktree manager")?;
+
+        let worktree = worktree_manager
+            .create_for_task(task_id, task_name, branch_prefix)
+            .context("Failed to create git worktree")?;
+
+        self.workspaces.insert(task_id.to_string(), WorkspaceInfo {
+            path: worktree.path.clone(),
+            branch: Some(worktree.branch.clone()),
+            is_worktree: true,
+        });
+
+        Ok((worktree.path, worktree.branch))
     }
 
     /// Get workspace path for a task
     pub fn get_workspace(&self, task_id: &str) -> Option<&PathBuf> {
+        self.workspaces.get(task_id).map(|info| &info.path)
+    }
+
+    /// Get workspace info for a task
+    pub fn get_workspace_info(&self, task_id: &str) -> Option<&WorkspaceInfo> {
         self.workspaces.get(task_id)
     }
 
     /// Clean up a task's workspace
-    pub async fn cleanup_workspace(&mut self, task_id: &str) -> Result<()> {
-        if let Some(workspace) = self.workspaces.remove(task_id) {
-            if workspace.exists() {
-                tokio::fs::remove_dir_all(&workspace)
+    pub async fn cleanup_workspace(&mut self, task_id: &str, delete_branch: bool) -> Result<()> {
+        if let Some(info) = self.workspaces.remove(task_id) {
+            if info.is_worktree {
+                use crate::git::worktree::WorktreeManager as GitWorktreeManager;
+                if let Ok(worktree_manager) = GitWorktreeManager::with_default_dir(&self.base_dir) {
+                    let _ = worktree_manager.remove_with_branch(task_id, delete_branch);
+                }
+            } else if info.path.exists() {
+                tokio::fs::remove_dir_all(&info.path)
                     .await
                     .context("Failed to remove workspace")?;
             }
@@ -526,6 +633,13 @@ impl WorkspaceManager {
 
     /// Clean up all workspaces
     pub async fn cleanup_all(&mut self) -> Result<()> {
+        // Clean up worktrees first
+        use crate::git::worktree::WorktreeManager as GitWorktreeManager;
+        if let Ok(worktree_manager) = GitWorktreeManager::with_default_dir(&self.base_dir) {
+            let _ = worktree_manager.cleanup_all();
+        }
+
+        // Clean up regular workspaces
         let workspaces_dir = self.base_dir.join(".doodoori").join("workspaces");
         if workspaces_dir.exists() {
             tokio::fs::remove_dir_all(&workspaces_dir)
@@ -534,6 +648,14 @@ impl WorkspaceManager {
         }
         self.workspaces.clear();
         Ok(())
+    }
+
+    /// List all workspaces
+    pub fn list_workspaces(&self) -> Vec<(&str, &WorkspaceInfo)> {
+        self.workspaces
+            .iter()
+            .map(|(k, v)| (k.as_str(), v))
+            .collect()
     }
 }
 
@@ -656,8 +778,29 @@ mod tests {
         assert_eq!(retrieved.unwrap(), &workspace);
 
         // Cleanup workspace
-        manager.cleanup_workspace("test-task").await.unwrap();
+        manager.cleanup_workspace("test-task", false).await.unwrap();
         assert!(!workspace.exists());
         assert!(manager.get_workspace("test-task").is_none());
+    }
+
+    #[test]
+    fn test_parallel_executor_with_git_worktrees() {
+        let executor = ParallelExecutor::with_workers(3)
+            .with_git_worktrees(true)
+            .with_git_branch_prefix("feature/")
+            .with_git_auto_commit(true);
+
+        assert!(executor.config.use_git_worktrees);
+        assert!(executor.config.task_isolation); // Should be enabled automatically
+        assert_eq!(executor.config.git_branch_prefix, "feature/");
+        assert!(executor.config.git_auto_commit);
+    }
+
+    #[test]
+    fn test_task_definition_with_name() {
+        let task = TaskDefinition::new("Test task")
+            .with_name("my-feature");
+
+        assert_eq!(task.name, Some("my-feature".to_string()));
     }
 }
