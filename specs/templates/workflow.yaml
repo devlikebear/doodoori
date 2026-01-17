@@ -1,0 +1,248 @@
+name: "Templates Feature (Phase 13)"
+description: |
+  Template system implementation for doodoori.
+  Follow doodoori.md development guidelines strictly.
+
+global:
+  default_model: sonnet
+  max_parallel_workers: 2
+  completion_promise: "cargo build succeeds and cargo test passes with all tests green"
+  budget_usd: 20.0
+
+steps:
+  # Step 1: Core module (독립적으로 먼저 실행)
+  - name: template-core
+    prompt: |
+      ## Task
+      Implement the template core module for doodoori.
+
+      ## Instructions
+      Follow doodoori.md development guidelines strictly:
+      - TDD: Write tests first, then implement
+      - All tests must pass
+      - Use proper error handling (anyhow, thiserror)
+
+      ## Spec File
+      Read: specs/templates/01-template-core.md
+
+      ## Files to Create
+      1. src/templates/mod.rs
+         - Template struct with name, description, category, prompt, variables
+         - TemplateVariable struct
+         - TemplateCategory enum (Scaffold, Refactor, Test, Fix, Docs, Custom)
+         - Template::render() method for variable substitution
+
+      2. src/templates/storage.rs
+         - TemplateStorage struct
+         - Methods: new(), list(), get(), save_user_template(), delete_user_template()
+
+      3. Update src/main.rs
+         - Add: mod templates;
+
+      ## Verification
+      Run these commands and ensure they succeed:
+      ```
+      cargo build
+      cargo test
+      ```
+
+      ## Tests Required
+      - Template creation test
+      - Variable rendering test
+      - TemplateStorage save/load test
+    model: sonnet
+    max_iterations: 30
+    budget_usd: 5.0
+
+  # Step 2: Built-in templates (template-core 완료 후)
+  - name: builtin-templates
+    depends_on: [template-core]
+    prompt: |
+      ## Task
+      Create built-in templates embedded in the binary.
+
+      ## Instructions
+      Follow doodoori.md development guidelines strictly.
+
+      ## Spec File
+      Read: specs/templates/03-builtin-templates.md
+
+      ## Files to Create
+      1. src/templates/builtin.rs
+         - load_builtin_templates() function
+         - Use include_str! macro to embed YAML files
+
+      2. src/templates/builtin/ directory with YAML files:
+         - api-endpoint.yaml (REST API endpoint scaffold)
+         - cli-command.yaml (CLI command scaffold)
+         - add-tests.yaml (unit test generation)
+         - fix-bug.yaml (bug fix helper)
+         - add-docs.yaml (documentation helper)
+
+      3. Update src/templates/mod.rs
+         - Add: pub mod builtin;
+
+      ## YAML Template Format
+      ```yaml
+      name: template-name
+      description: What this template does
+      category: scaffold  # scaffold/refactor/test/fix/docs/custom
+      tags: [rust, api]
+      default_model: sonnet
+      variables:
+        - name: var_name
+          description: Variable description
+          required: true
+          default: optional_default
+      prompt: |
+        Your prompt with {var_name} placeholders
+      ```
+
+      ## Verification
+      ```
+      cargo build
+      cargo test
+      ```
+
+      ## Tests Required
+      - All builtin templates load successfully
+      - Template YAML parsing test
+    model: sonnet
+    max_iterations: 25
+    budget_usd: 4.0
+
+  # Step 3: CLI commands (template-core 완료 후)
+  - name: template-cli
+    depends_on: [template-core]
+    prompt: |
+      ## Task
+      Implement template CLI commands.
+
+      ## Instructions
+      Follow doodoori.md development guidelines strictly.
+
+      ## Spec File
+      Read: specs/templates/02-template-cli.md
+
+      ## Files to Create
+      1. src/cli/commands/template.rs
+         - TemplateCommand enum with subcommands:
+           - List: list templates (--category, --tag filters)
+           - Show: show template details
+           - Use: render and optionally execute template
+           - Create: create user template
+           - Delete: delete user template
+         - Use clap derive macros
+         - Follow existing command patterns
+
+      2. Update src/cli/commands/mod.rs
+         - Add: pub mod template;
+
+      3. Update src/cli/mod.rs
+         - Add Template variant to Commands enum
+         - Add match arm for Template command
+
+      ## Verification
+      ```
+      cargo build
+      cargo test
+      ```
+
+      ## Tests Required
+      - Command argument parsing tests
+      - Variable parsing test (key=value format)
+    model: sonnet
+    max_iterations: 30
+    budget_usd: 5.0
+
+  # Step 4: Run integration (template-cli와 builtin 완료 후)
+  - name: run-integration
+    depends_on: [template-cli, builtin-templates]
+    prompt: |
+      ## Task
+      Integrate templates with the run command.
+
+      ## Instructions
+      Follow doodoori.md development guidelines strictly.
+
+      ## Spec File
+      Read: specs/templates/04-run-integration.md
+
+      ## Files to Modify
+      1. src/cli/commands/run.rs
+         - Add --template / -t flag (template name)
+         - Add --var / -V flag (template variables, key=value format)
+         - In execute():
+           - If --template specified, load template from TemplateStorage
+           - Parse --var flags into HashMap
+           - Validate required variables
+           - Render template prompt
+           - Use rendered prompt for execution
+         - Support --dry-run with templates (show rendered prompt)
+
+      ## Usage Examples
+      ```bash
+      doodoori run --template api-endpoint --var resource=users
+      doodoori run -t add-tests -V file=src/utils.rs --dry-run
+      ```
+
+      ## Verification
+      ```
+      cargo build
+      cargo test
+      ```
+
+      ## Tests Required
+      - Template variable parsing test
+      - Required variable validation test
+    model: sonnet
+    max_iterations: 25
+    budget_usd: 4.0
+
+  # Step 5: Documentation (모든 것 완료 후)
+  - name: documentation
+    depends_on: [run-integration]
+    prompt: |
+      ## Task
+      Update documentation and bump version.
+
+      ## Instructions
+      Follow doodoori.md development guidelines.
+
+      ## Files to Update
+
+      1. Cargo.toml
+         - Change version from "0.12.0" to "0.13.0"
+
+      2. CHANGELOG.md
+         - Add new section at top:
+         ```markdown
+         ## [0.13.0] - 2026-01-17
+
+         ### Added
+
+         - **Template System**: Pre-built and custom task templates
+           - `doodoori template list` - List available templates
+           - `doodoori template show <name>` - Show template details
+           - `doodoori template use <name>` - Use a template
+           - `doodoori run --template <name>` - Run with template
+           - Built-in templates: api-endpoint, cli-command, add-tests, fix-bug, add-docs
+           - Custom user templates in ~/.doodoori/templates/
+         ```
+
+      3. README.md
+         - Add to Features list:
+           - **Template System**: Pre-built and custom task templates for common scenarios
+         - Add "Templates" section after "Output Formatters" with usage examples
+         - Update Development Roadmap: add "- [x] Phase 13: Template System"
+
+      ## Verification
+      ```
+      cargo build --release
+      cargo test
+      ```
+
+      Ensure ALL tests pass before completing.
+    model: sonnet
+    max_iterations: 15
+    budget_usd: 2.0
