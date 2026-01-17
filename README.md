@@ -19,6 +19,7 @@ Named after **Doodoori (두두리, 豆豆里)**, the Silla dynasty's blacksmith 
 - **Permission Control**: YOLO mode, read-only mode, and custom allowed tools
 - **Spec File System**: Markdown-based task specifications with validation
 - **Sandbox Mode**: Docker-based isolated execution environment
+- **Parallel Execution**: Run multiple tasks concurrently with worker pool
 
 ## Installation
 
@@ -119,6 +120,38 @@ make docker-build
 - Optional network isolation
 - Non-root execution for security
 
+## Parallel Execution
+
+Run multiple tasks concurrently for faster completion:
+
+```bash
+# Run multiple tasks in parallel
+doodoori parallel --task "Task A" --task "Task B" --task "Task C"
+
+# With specific worker count
+doodoori parallel -w 5 --task "Task 1" --task "Task 2"
+
+# With task isolation (separate workspace per task)
+doodoori parallel --isolate --task "Task A" --task "Task B"
+
+# Fail-fast mode (stop all on first failure)
+doodoori parallel --fail-fast --task "Critical A" --task "Critical B"
+
+# With model override and budget
+doodoori parallel -m opus --budget 10.0 --task "Complex A" --task "Complex B"
+
+# Preview execution plan
+doodoori parallel --dry-run --task "Task A" --task "Task B"
+```
+
+**Parallel features:**
+- Semaphore-based worker pool for controlled concurrency
+- Task isolation with separate workspaces
+- Real-time progress tracking
+- Aggregated cost and result reporting
+- Fail-fast mode for critical tasks
+- Budget limit across all tasks
+
 ## Configuration
 
 Create a `doodoori.toml` in your project root:
@@ -153,6 +186,9 @@ workers = 3
 | `doodoori run --spec <file.md>` | Run from a spec file |
 | `doodoori run --sandbox <prompt>` | Run in Docker sandbox |
 | `doodoori run --dry-run <prompt>` | Preview execution plan |
+| `doodoori parallel --task "A" --task "B"` | Run tasks in parallel |
+| `doodoori parallel --isolate --task "A"` | Parallel with task isolation |
+| `doodoori parallel --dry-run --task "A"` | Preview parallel execution plan |
 | `doodoori spec <description>` | Generate a spec file |
 | `doodoori spec --validate <file.md>` | Validate a spec file |
 | `doodoori spec --info <file.md>` | Show parsed spec information |
@@ -223,7 +259,7 @@ doodoori spec --validate api-spec.md
 - [x] Phase 2: Spec file system with markdown parsing
 - [x] Phase 3: Sandbox mode with Docker
 - [x] Phase 4: State management, secrets, and resume
-- [ ] Phase 5: Parallel execution
+- [x] Phase 5: Parallel execution
 - [ ] Phase 6: Workflows and TUI dashboard
 
 ## License

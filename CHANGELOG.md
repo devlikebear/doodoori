@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-01-17
+
+### Added
+
+- **Parallel Execution**: Run multiple tasks concurrently
+  - `ParallelExecutor` with semaphore-based worker pool
+  - `TaskDefinition` for configuring individual tasks
+  - `ParallelConfig` for executor settings (workers, budget, fail-fast)
+  - `ParallelResult` with aggregated results and statistics
+  - `ParallelEvent` for real-time progress monitoring
+
+- **Task Isolation**: Separate workspaces for parallel tasks
+  - `WorkspaceManager` for creating/cleaning task workspaces
+  - Workspaces stored in `.doodoori/workspaces/<task-id>/`
+  - `--isolate` flag for enabling task isolation
+
+- **Parallel CLI Improvements**
+  - `doodoori parallel --task "A" --task "B"` for multiple tasks
+  - `--workers` to control concurrency (default: 3)
+  - `--isolate` for task workspace isolation
+  - `--fail-fast` to stop on first failure
+  - `--max-iterations` per task limit
+  - `--yolo` mode for parallel tasks
+  - Real-time progress display with task status
+
+### Changed
+
+- Parallel command now uses the new `ParallelExecutor`
+- Progress events shown during parallel execution
+
+### Tests
+
+- 138 unit tests (7 new tests for parallel executor)
+
 ## [0.5.0] - 2026-01-17
 
 ### Added
