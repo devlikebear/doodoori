@@ -6,6 +6,7 @@ use crate::claude::{ClaudeEvent, ModelAlias};
 use crate::instructions::SpecParser;
 use crate::loop_engine::{LoopConfig, LoopEngine, LoopEvent, LoopStatus};
 use crate::notifications::{NotificationManager, NotificationsConfig};
+use crate::output::{OutputFormat, OutputWriter, TaskOutput};
 
 /// Run a task with Claude Code
 #[derive(Args, Debug)]
@@ -91,6 +92,14 @@ pub struct RunArgs {
     /// Disable notifications
     #[arg(long)]
     pub no_notify: bool,
+
+    /// Output format (text, json, json-pretty, yaml, markdown)
+    #[arg(long, short = 'f', default_value = "text")]
+    pub format: String,
+
+    /// Output file path (default: stdout)
+    #[arg(long, short = 'o')]
+    pub output: Option<String>,
 }
 
 impl RunArgs {
@@ -165,6 +174,7 @@ impl RunArgs {
 
         // Build loop configuration
         let working_dir = std::env::current_dir().ok();
+        let model_name = format!("{:?}", model); // Save for output before move
         let system_prompt = if self.no_instructions {
             None
         } else {
@@ -268,6 +278,9 @@ impl RunArgs {
 
         let engine = LoopEngine::new(loop_config);
 
+        // Generate task ID for output
+        let result_task_id = uuid::Uuid::new_v4().to_string();
+
         // Create progress bar
         let progress = ProgressBar::new(max_iterations as u64);
         progress.set_style(
@@ -317,8 +330,45 @@ impl RunArgs {
                 }
                 LoopEvent::LoopFinished { status, total_iterations, total_usage } => {
                     progress.finish_and_clear();
-                    println!();
-                    self.print_result(&status, total_iterations, &total_usage);
+
+                    // Parse output format
+                    let output_format: OutputFormat = self.format.parse().unwrap_or_default();
+
+                    // If using text format, print the usual result
+                    if output_format == OutputFormat::Text {
+                        println!();
+                        self.print_result(&status, total_iterations, &total_usage);
+                    } else {
+                        // Build TaskOutput for structured formats
+                        let task_output = TaskOutput::new(
+                            result_task_id.clone(),
+                            prompt.to_string(),
+                        )
+                        .with_model(model_name.clone())
+                        .with_status(format!("{:?}", status))
+                        .with_iterations(total_iterations)
+                        .with_cost(total_usage.total_cost_usd)
+                        .with_duration(total_usage.duration_ms)
+                        .with_tokens(total_usage.input_tokens, total_usage.output_tokens);
+
+                        // Add error if present
+                        let task_output = if let LoopStatus::Error(ref e) = status {
+                            task_output.with_error(e)
+                        } else {
+                            task_output
+                        };
+
+                        // Write output
+                        let writer = if let Some(ref path) = self.output {
+                            OutputWriter::new(output_format).with_file(path)
+                        } else {
+                            OutputWriter::new(output_format)
+                        };
+
+                        if let Err(e) = writer.write_task(&task_output) {
+                            tracing::error!("Failed to write output: {}", e);
+                        }
+                    }
                 }
             }
         }
@@ -326,8 +376,9 @@ impl RunArgs {
         // Wait for the loop to finish
         let result = handle.await??;
 
-        // Print final status if not already printed
-        if result.status != LoopStatus::Completed {
+        // Print final status if not already printed (only for text format)
+        let output_format: OutputFormat = self.format.parse().unwrap_or_default();
+        if result.status != LoopStatus::Completed && output_format == OutputFormat::Text {
             println!();
             self.print_result(&result.status, result.iterations, &result.total_usage);
         }
