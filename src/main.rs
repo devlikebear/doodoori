@@ -11,6 +11,7 @@ mod hooks;
 mod instructions;
 mod loop_engine;
 mod notifications;
+mod output;
 mod pricing;
 mod sandbox;
 mod secrets;
