@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::Args;
 use std::path::PathBuf;
 
+use crate::output::{CostOutput, OutputFormat, OutputWriter};
 use crate::pricing::{format_cost, format_tokens, CostHistoryManager};
 
 /// View cost history and tracking
@@ -30,6 +31,14 @@ pub struct CostArgs {
     /// Project directory (default: current directory)
     #[arg(long)]
     pub project: Option<PathBuf>,
+
+    /// Output format (text, json, json-pretty, yaml, markdown)
+    #[arg(long, short = 'f', default_value = "text")]
+    pub format: String,
+
+    /// Output file path (default: stdout)
+    #[arg(long, short = 'o')]
+    pub output: Option<String>,
 }
 
 impl CostArgs {
@@ -76,49 +85,79 @@ impl CostArgs {
     fn show_summary(&self, manager: &CostHistoryManager) -> Result<()> {
         let history = manager.history();
 
-        println!("=== Cost Summary ===\n");
+        // Parse output format
+        let output_format: OutputFormat = self.format.parse().unwrap_or_default();
 
-        // Today's cost
-        if let Some(today) = history.get_today_summary() {
-            println!("Today:       {} ({} tasks)", format_cost(today.total_cost_usd), today.task_count);
-        } else {
-            println!("Today:       $0.00 (0 tasks)");
-        }
-
-        // This month's cost
+        // Get summary data
+        let today_cost = history.get_today_summary()
+            .map(|t| t.total_cost_usd)
+            .unwrap_or(0.0);
         let monthly = history.get_monthly_total();
-        println!("This month:  {}", format_cost(monthly));
-
-        // All time
         let total = history.get_total_cost();
         let (input_tokens, output_tokens) = history.get_total_tokens();
-        println!("All time:    {}", format_cost(total));
-        println!();
+        let task_count = history.entries.len() as u64;
 
-        // Token summary
-        println!("Total tokens:");
-        println!("  Input:  {}", format_tokens(input_tokens));
-        println!("  Output: {}", format_tokens(output_tokens));
+        if output_format == OutputFormat::Text {
+            println!("=== Cost Summary ===\n");
 
-        // Recent activity
-        let recent = history.get_recent_entries(5);
-        if !recent.is_empty() {
-            println!("\nRecent tasks:");
-            for entry in recent {
-                let short_id = &entry.task_id[..8.min(entry.task_id.len())];
-                let desc = entry.description.as_deref().unwrap_or("-");
-                let desc_short = if desc.len() > 30 {
-                    format!("{}...", &desc[..27])
-                } else {
-                    desc.to_string()
-                };
-                println!(
-                    "  {} │ {} │ {} │ {}",
-                    short_id,
-                    entry.model,
-                    format_cost(entry.cost_usd),
-                    desc_short
-                );
+            // Today's cost
+            if let Some(today) = history.get_today_summary() {
+                println!("Today:       {} ({} tasks)", format_cost(today.total_cost_usd), today.task_count);
+            } else {
+                println!("Today:       $0.00 (0 tasks)");
+            }
+
+            // This month's cost
+            println!("This month:  {}", format_cost(monthly));
+
+            // All time
+            println!("All time:    {}", format_cost(total));
+            println!();
+
+            // Token summary
+            println!("Total tokens:");
+            println!("  Input:  {}", format_tokens(input_tokens));
+            println!("  Output: {}", format_tokens(output_tokens));
+
+            // Recent activity
+            let recent = history.get_recent_entries(5);
+            if !recent.is_empty() {
+                println!("\nRecent tasks:");
+                for entry in recent {
+                    let short_id = &entry.task_id[..8.min(entry.task_id.len())];
+                    let desc = entry.description.as_deref().unwrap_or("-");
+                    let desc_short = if desc.len() > 30 {
+                        format!("{}...", &desc[..27])
+                    } else {
+                        desc.to_string()
+                    };
+                    println!(
+                        "  {} │ {} │ {} │ {}",
+                        short_id,
+                        entry.model,
+                        format_cost(entry.cost_usd),
+                        desc_short
+                    );
+                }
+            }
+        } else {
+            // Build structured output
+            let cost_output = CostOutput::new()
+                .with_today(today_cost)
+                .with_month(monthly)
+                .with_total(total)
+                .with_task_count(task_count)
+                .with_tokens(input_tokens, output_tokens);
+
+            // Write output
+            let writer = if let Some(ref path) = self.output {
+                OutputWriter::new(output_format).with_file(path)
+            } else {
+                OutputWriter::new(output_format)
+            };
+
+            if let Err(e) = writer.write_cost(&cost_output) {
+                tracing::error!("Failed to write output: {}", e);
             }
         }
 
