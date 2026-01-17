@@ -22,6 +22,9 @@ Named after **Doodoori (두두리, 豆豆里)**, the Silla dynasty's blacksmith 
 - **Parallel Execution**: Run multiple tasks concurrently with worker pool
 - **Workflow System**: YAML-based complex workflow definitions with DAG scheduling
 - **TUI Dashboard**: Real-time monitoring dashboard (optional feature)
+- **Git Workflow**: Git worktree support, conventional commits, and PR automation
+- **Hooks System**: Execute custom scripts at execution points (pre_run, post_run, on_error, etc.)
+- **Notifications**: Send notifications to Slack, Discord, or webhooks on task events
 
 ## Installation
 
@@ -153,6 +156,63 @@ doodoori parallel --dry-run --task "Task A" --task "Task B"
 - Aggregated cost and result reporting
 - Fail-fast mode for critical tasks
 - Budget limit across all tasks
+- Git worktree mode for branch-based isolation
+
+## Git Workflow
+
+Doodoori supports Git workflow automation with worktrees for parallel development:
+
+```bash
+# Initialize git workflow in current directory
+doodoori git init
+
+# Create isolated worktrees for parallel tasks
+doodoori parallel --git-worktree --task "Backend API" --task "Frontend UI"
+
+# Each task gets its own worktree and branch:
+# - .doodoori/worktrees/task-1 (branch: task/backend-api)
+# - .doodoori/worktrees/task-2 (branch: task/frontend-ui)
+
+# Run multiple spec files in parallel with git worktrees
+doodoori parallel --specs "specs/*.md" --git-worktree --branch-prefix "feature/"
+
+# Example: specs/ folder structure
+# specs/
+# ├── backend-api.md   → worktree: feature/backend-api
+# ├── frontend-ui.md   → worktree: feature/frontend-ui
+# └── database.md      → worktree: feature/database
+
+# Manage worktrees manually
+doodoori git worktree list
+doodoori git worktree add my-feature --prefix "feature/"
+doodoori git worktree remove task-123 --delete-branch
+doodoori git worktree prune
+
+# Create conventional commits
+doodoori git commit -t feat -m "add user authentication" -s api
+doodoori git commit -t fix -m "resolve login bug" --breaking
+
+# Manage pull requests (requires gh CLI)
+doodoori git pr create --title "Add authentication" --draft
+doodoori git pr list --state open
+doodoori git pr view 123
+doodoori git pr merge 123 --squash
+
+# Branch management
+doodoori git branch list
+doodoori git branch create feature/new-api --checkout
+doodoori git branch task "My New Feature" --prefix "feature/" --checkout
+
+# Check git workflow status
+doodoori git status
+```
+
+**Git workflow features:**
+- Git worktree support for parallel task isolation
+- Automatic branch naming with sanitization
+- Conventional Commits (feat, fix, refactor, docs, test, chore)
+- GitHub PR automation via gh CLI
+- Branch management with task-friendly naming
 
 ## Workflows
 
@@ -235,6 +295,126 @@ doodoori dashboard --refresh 1000
 - Cost summary view
 - Keyboard navigation (Tab, q to quit)
 
+## Hooks
+
+Execute custom scripts at various points during task execution:
+
+```bash
+# Create hook scripts
+mkdir -p scripts
+
+# Pre-run hook (runs before task starts)
+cat > scripts/pre_run.sh << 'EOF'
+#!/bin/bash
+echo "Starting task: $DOODOORI_TASK_ID"
+echo "Model: $DOODOORI_MODEL"
+# Run any setup: backup, lint check, etc.
+EOF
+
+# Post-run hook (runs after task completes)
+cat > scripts/post_run.sh << 'EOF'
+#!/bin/bash
+echo "Task finished with status: $DOODOORI_STATUS"
+echo "Total cost: $DOODOORI_COST_USD"
+# Run any cleanup: notifications, deploy, etc.
+EOF
+
+# On-error hook
+cat > scripts/on_error.sh << 'EOF'
+#!/bin/bash
+echo "Error occurred: $DOODOORI_ERROR"
+# Send notification, rollback, etc.
+EOF
+
+chmod +x scripts/*.sh
+```
+
+Configure hooks in `doodoori.toml`:
+
+```toml
+[hooks]
+enabled = true
+timeout_secs = 60
+pre_run = "scripts/pre_run.sh"
+post_run = "scripts/post_run.sh"
+on_error = "scripts/on_error.sh"
+on_iteration = "scripts/on_iteration.sh"
+on_complete = "scripts/on_complete.sh"
+```
+
+**Available hooks:**
+- `pre_run`: Before task execution starts
+- `post_run`: After task execution completes (success or failure)
+- `on_error`: When an error occurs
+- `on_iteration`: After each loop iteration
+- `on_complete`: When task completes successfully
+
+**Environment variables passed to hooks:**
+- `DOODOORI_TASK_ID`: Unique task identifier
+- `DOODOORI_PROMPT`: Task prompt (truncated if long)
+- `DOODOORI_MODEL`: Model being used
+- `DOODOORI_ITERATION`: Current iteration number
+- `DOODOORI_TOTAL_ITERATIONS`: Maximum iterations
+- `DOODOORI_COST_USD`: Current cost in USD
+- `DOODOORI_STATUS`: Task status (starting, running, completed, error)
+- `DOODOORI_ERROR`: Error message (for on_error hook)
+- `DOODOORI_WORKING_DIR`: Working directory
+- `DOODOORI_HOOK_TYPE`: Type of hook being executed
+
+**Disable hooks:**
+
+```bash
+# Via CLI flag
+doodoori run --no-hooks "Your task"
+
+# Via config
+[hooks]
+enabled = false
+```
+
+## Notifications
+
+Send notifications to Slack, Discord, or any webhook when tasks start, complete, or fail:
+
+```bash
+# Enable notifications via CLI (uses doodoori.toml config)
+doodoori run --notify "Your task"
+
+# Use a specific webhook URL
+doodoori run --notify "https://hooks.slack.com/services/..." "Your task"
+
+# Disable notifications
+doodoori run --no-notify "Your task"
+```
+
+Configure notifications in `doodoori.toml`:
+
+```toml
+[notifications]
+enabled = true
+# Slack webhook
+slack_webhook = "https://hooks.slack.com/services/..."
+# Discord webhook
+discord_webhook = "https://discord.com/api/webhooks/..."
+# Generic webhook
+webhook_url = "https://your-api.com/webhook"
+# Events to notify on: started, completed, error, budget_exceeded, max_iterations
+events = ["completed", "error"]
+```
+
+**Notification features:**
+- **Slack**: Rich message formatting with attachments (color-coded by status)
+- **Discord**: Embed messages with fields for task details
+- **Generic Webhook**: JSON POST payload to any endpoint
+- Auto-detection of webhook type from URL
+
+**Notification payload:**
+- Task ID, prompt, model
+- Iterations, cost, duration
+- Status (started, completed, error, etc.)
+- Error message (if applicable)
+- Timestamp
+
 ## Configuration
 
 Create a `doodoori.toml` in your project root:
@@ -259,6 +439,20 @@ auto_commit = true
 
 [parallel]
 workers = 3
+
+[hooks]
+enabled = true
+timeout_secs = 60
+# pre_run = "scripts/pre_run.sh"
+# post_run = "scripts/post_run.sh"
+# on_error = "scripts/on_error.sh"
+
+[notifications]
+enabled = false
+# slack_webhook = "https://hooks.slack.com/services/..."
+# discord_webhook = "https://discord.com/api/webhooks/..."
+# webhook_url = "https://your-api.com/webhook"
+events = ["completed", "error"]
 ```
 
 ## CLI Commands
@@ -270,6 +464,8 @@ workers = 3
 | `doodoori run --sandbox <prompt>` | Run in Docker sandbox |
 | `doodoori run --dry-run <prompt>` | Preview execution plan |
 | `doodoori parallel --task "A" --task "B"` | Run tasks in parallel |
+| `doodoori parallel --specs "*.md"` | Run spec files as parallel tasks |
+| `doodoori parallel --specs "*.md" --git-worktree` | Specs with git worktrees |
 | `doodoori parallel --isolate --task "A"` | Parallel with task isolation |
 | `doodoori parallel --dry-run --task "A"` | Preview parallel execution plan |
 | `doodoori workflow run <file.yaml>` | Run a workflow |
@@ -291,6 +487,15 @@ workers = 3
 | `doodoori secret set <key>` | Store secret in keychain |
 | `doodoori secret get <key>` | Retrieve secret from keychain |
 | `doodoori secret list` | List stored secrets |
+| `doodoori git init` | Initialize git workflow |
+| `doodoori git status` | Show git workflow status |
+| `doodoori git worktree list` | List worktrees |
+| `doodoori git worktree add <name>` | Create worktree for task |
+| `doodoori git worktree remove <id>` | Remove a worktree |
+| `doodoori git commit -t <type> -m <msg>` | Create conventional commit |
+| `doodoori git pr create` | Create pull request |
+| `doodoori git pr list` | List pull requests |
+| `doodoori git branch list` | List branches |
 | `doodoori config` | Show configuration |
 | `doodoori price` | Show model pricing |
 
@@ -349,6 +554,10 @@ doodoori spec --validate api-spec.md
 - [x] Phase 4: State management, secrets, and resume
 - [x] Phase 5: Parallel execution
 - [x] Phase 6: Workflows and TUI dashboard
+- [x] Phase 7: Git workflow and worktree support
+- [x] Phase 8: Loop Engine integration (run, resume, parallel, workflow)
+- [x] Phase 9: Hooks system (pre_run, post_run, on_error, on_iteration, on_complete)
+- [x] Phase 10: Notifications (Slack, Discord, Webhook)
 
 ## License
 

@@ -5,6 +5,185 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-01-17
+
+### Added
+
+- **Hooks System**: Execute custom scripts at various execution points
+  - `pre_run`: Before task execution starts
+  - `post_run`: After task execution completes (success or failure)
+  - `on_error`: When an error occurs during execution
+  - `on_iteration`: After each loop iteration
+  - `on_complete`: When task completes successfully
+
+- **Hook Configuration**: Configure hooks via doodoori.toml
+  - `[hooks]` section with script paths
+  - Configurable timeout per hook (default: 60 seconds)
+  - `continue_on_failure` option for non-blocking hooks
+  - Environment variables passed to hooks (DOODOORI_TASK_ID, DOODOORI_MODEL, etc.)
+
+- **Notifications System**: Send notifications to Slack, Discord, or webhooks
+  - Slack notifications with rich message formatting (attachments)
+  - Discord notifications with embed support
+  - Generic webhook notifications (JSON payload via HTTP POST)
+  - Configurable events: `started`, `completed`, `error`, `budget_exceeded`, `max_iterations`
+  - Auto-detection of webhook type from URL
+
+- **Notification Configuration**: Configure via doodoori.toml
+  - `[notifications]` section with webhook URLs
+  - `slack_webhook`, `discord_webhook`, `webhook_url` options
+  - `events` array to specify which events trigger notifications
+  - Default events: `completed`, `error`
+
+- **CLI Flags**:
+  - `--no-hooks`: Disable hooks execution
+  - `--notify [url]`: Enable notifications (optional URL for direct webhook)
+  - `--no-notify`: Disable notifications
+  - `--verbose`: Shows hook execution status
+
+### Changed
+
+- `LoopConfig`: Added `hooks`, `disable_hooks`, `notifications`, `disable_notifications` fields
+- `LoopEvent`: Added `HookExecuted` variant for hook events
+- `DoodooriConfig`: Added `HooksConfigFile` and `NotificationsConfigFile` for TOML configuration
+- Added `tokio/time` feature for hook timeouts
+- Added `async-trait` and `reqwest` dependencies for notifications
+
+### Tests
+
+- 208 unit tests (20 new tests for hooks and notifications modules)
+
+## [0.10.0] - 2026-01-17
+
+### Added
+
+- **Workflow Resume**: Resume interrupted or failed workflows
+  - `doodoori workflow resume <id>` to continue a workflow
+  - `doodoori workflow resume --list` to show resumable workflows
+  - Prefix-based workflow ID lookup (e.g., `resume abc` finds `abc123...`)
+  - `--from-step` option to resume from a specific step
+  - `--yolo` and `--sandbox` flags for resume execution
+
+- **WorkflowStateManager**: Persistent workflow state tracking
+  - Workflow states saved to `.doodoori/workflow_states/`
+  - Automatic state saving during workflow execution
+  - Step-by-step status tracking (Pending, Running, Completed, Failed, Skipped)
+  - Completed step preservation during resume
+  - Cleanup utilities for old workflow states
+
+### Changed
+
+- `workflow/mod.rs`: Added `workflow_file` field to WorkflowState
+- `workflow/mod.rs`: Added `short_id()` and `get_completed_steps()` methods
+- `cli/commands/workflow.rs`: Integrated state persistence in run command
+- `cli/commands/workflow.rs`: Implemented full resume functionality
+
+### Tests
+
+- 188 unit tests (3 new tests for WorkflowStateManager)
+
+## [0.9.0] - 2026-01-17
+
+### Added
+
+- **Loop Engine Integration**: Full execution pipeline connected
+  - `run` command now executes tasks using Loop Engine
+  - `resume` command now continues interrupted tasks with Loop Engine
+  - `parallel` command uses Loop Engine through ParallelExecutor
+  - `workflow` command executes DAG-based workflows with Loop Engine
+
+- **Real-time Progress Display**
+  - Progress bar with iteration count and cost tracking
+  - Emoji-based status indicators (✅, ⚠️, ❌, etc.)
+  - Colored output for success/warning/error states
+
+- **Spec File Execution**
+  - `--spec` flag loads spec file and extracts prompt
+  - Spec model and max_iterations used as defaults
+  - CLI arguments override spec values
+
+- **Config Command**: Display current configuration
+  - `doodoori config` shows all settings
+  - Shows config file status (loaded or using defaults)
+  - Displays [General], [Git], [Logging], [Parallel] sections
+
+- **Price Command**: Display model pricing
+  - `doodoori price` shows all model prices
+  - `doodoori price --model <name>` shows detailed info
+  - Cost examples with token estimates
+
+- **Verbose Output Mode**
+  - `--verbose` flag for run command
+  - Shows Claude events in real-time (tool calls, results)
+  - Session info, assistant messages, tool results
+
+### Changed
+
+- `run.rs`: Integrated with LoopEngine for actual execution
+- `resume.rs`: Integrated with LoopEngine for task resumption
+- `cli/mod.rs`: Implemented config and price commands
+- Added `console` and `indicatif` progress display integration
+
+### Tests
+
+- 185 unit tests (all passing)
+
+## [0.8.0] - 2026-01-17
+
+### Added
+
+- **Git Module**: Comprehensive git workflow automation
+  - `GitRepository` for repository management (open, init, status)
+  - `BranchManager` for branch operations (create, checkout, delete, list)
+  - `WorktreeManager` for git worktree support
+  - `CommitManager` for conventional commits
+  - `PrManager` for GitHub PR automation via gh CLI
+
+- **Git Worktree Support**: Isolated workspaces for parallel tasks
+  - Each parallel task can run in its own git worktree
+  - Automatic branch creation with sanitized naming
+  - Worktree stored in `.doodoori/worktrees/<task-id>/`
+  - `--git-worktree` flag for parallel command
+  - `--branch-prefix` for custom branch prefixes
+  - `--auto-commit` and `--auto-pr` flags
+
+- **Conventional Commits**: Structured commit messages
+  - Support for all commit types (feat, fix, refactor, docs, test, chore, etc.)
+  - Scope and breaking change support
+  - Body and footer for detailed descriptions
+
+- **PR Automation**: GitHub integration via gh CLI
+  - Create, list, view, merge, and close PRs
+  - Draft PR support
+  - Labels and base branch configuration
+
+- **Git CLI Commands**
+  - `doodoori git init` - Initialize git workflow
+  - `doodoori git status` - Show workflow status
+  - `doodoori git worktree list/add/remove/prune` - Worktree management
+  - `doodoori git commit -t <type> -m <msg>` - Conventional commits
+  - `doodoori git pr create/list/view/merge/close` - PR management
+  - `doodoori git branch list/create/delete/task` - Branch management
+
+- **Spec Files + Git Worktree Integration**
+  - `--specs "pattern"` flag for loading multiple spec files via glob pattern
+  - Each spec file becomes a separate task with its own worktree
+  - Spec file title used for branch naming (sanitized)
+  - `--spec` flag for single spec file with multi-task support
+  - Automatic branch name generation from spec titles
+
+### Changed
+
+- Added `git2` dependency for native git operations
+- Added `glob` dependency for spec file pattern matching
+- Extended `ParallelConfig` with git worktree settings
+- Extended `TaskDefinition` with optional task name and git branch
+- Extended `WorkspaceManager` with worktree support
+
+### Tests
+
+- 185 unit tests (35 new tests for git and specs integration)
+
 ## [0.7.0] - 2026-01-17
 
 ### Added
