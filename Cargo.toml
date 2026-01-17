@@ -1,6 +1,6 @@
 [package]
 name = "doodoori"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
 description = "Autonomous CLI tool that uses Claude Code internally to complete goals without user intervention"
 authors = ["devlikebear <devlikebear@gmail.com>"]
@@ -63,6 +63,10 @@ console = "0.15"
 
 # Markdown parsing
 pulldown-cmark = "0.12"
+
+# File watching
+notify = "7.0"
+notify-debouncer-mini = "0.5"
 
 # Keychain (optional)
 keyring = { version = "3.6", optional = true }
