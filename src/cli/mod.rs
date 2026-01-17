@@ -7,7 +7,7 @@ use std::path::Path;
 use commands::{
     cost::CostArgs, dashboard::DashboardArgs, git::GitArgs, parallel::ParallelArgs,
     resume::ResumeArgs, run::RunArgs, sandbox::SandboxArgs, secret::SecretArgs, spec::SpecArgs,
-    workflow::WorkflowArgs,
+    watch::WatchArgs, workflow::WorkflowArgs,
 };
 use crate::config::DoodooriConfig;
 use crate::pricing::{format_cost, CostCalculator, PricingConfig};
@@ -66,6 +66,9 @@ pub enum Commands {
     /// Git workflow management (worktrees, commits, PRs)
     Git(GitArgs),
 
+    /// Watch for file changes and run tasks automatically
+    Watch(WatchArgs),
+
     /// Show current configuration
     Config,
 
@@ -95,6 +98,7 @@ impl Cli {
             Commands::Workflow(args) => args.execute().await,
             Commands::Dashboard(args) => args.execute().await,
             Commands::Git(args) => args.execute().await,
+            Commands::Watch(args) => args.execute().await,
             Commands::Config => {
                 self.execute_config().await
             }
@@ -610,6 +614,82 @@ mod tests {
         // Should fail without prompt or spec
         let result = Cli::try_parse_from(["doodoori", "run"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cli_watch_basic() {
+        let cli = Cli::try_parse_from(["doodoori", "watch", "Run tests"]).unwrap();
+
+        match cli.command {
+            Commands::Watch(args) => {
+                assert_eq!(args.prompt, Some("Run tests".to_string()));
+                assert_eq!(args.model, "sonnet");
+                assert_eq!(args.max_iterations, 30);
+                assert_eq!(args.budget, 1.0);
+                assert!(!args.yolo);
+            }
+            _ => panic!("Expected Watch command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_watch_with_patterns() {
+        let cli = Cli::try_parse_from([
+            "doodoori", "watch",
+            "-p", "src/**/*.rs",
+            "-p", "tests/**/*.rs",
+            "Run tests"
+        ]).unwrap();
+
+        match cli.command {
+            Commands::Watch(args) => {
+                assert_eq!(args.patterns, vec!["src/**/*.rs", "tests/**/*.rs"]);
+            }
+            _ => panic!("Expected Watch command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_watch_with_spec() {
+        let cli = Cli::try_parse_from([
+            "doodoori", "watch",
+            "--spec", "task.md"
+        ]).unwrap();
+
+        match cli.command {
+            Commands::Watch(args) => {
+                assert_eq!(args.spec, Some("task.md".to_string()));
+            }
+            _ => panic!("Expected Watch command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_watch_with_options() {
+        let cli = Cli::try_parse_from([
+            "doodoori", "watch",
+            "--model", "opus",
+            "--max-iterations", "50",
+            "--budget", "5.0",
+            "--debounce", "1000",
+            "--clear",
+            "--run-initial",
+            "--yolo",
+            "Complex task"
+        ]).unwrap();
+
+        match cli.command {
+            Commands::Watch(args) => {
+                assert_eq!(args.model, "opus");
+                assert_eq!(args.max_iterations, 50);
+                assert_eq!(args.budget, 5.0);
+                assert_eq!(args.debounce, 1000);
+                assert!(args.clear);
+                assert!(args.run_initial);
+                assert!(args.yolo);
+            }
+            _ => panic!("Expected Watch command"),
+        }
     }
 
     #[test]

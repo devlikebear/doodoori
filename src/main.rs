@@ -16,6 +16,7 @@ mod sandbox;
 mod secrets;
 mod state;
 mod utils;
+mod watch;
 mod workflow;
 
 use cli::Cli;

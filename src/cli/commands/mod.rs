@@ -7,4 +7,5 @@ pub mod run;
 pub mod sandbox;
 pub mod secret;
 pub mod spec;
+pub mod watch;
 pub mod workflow;
