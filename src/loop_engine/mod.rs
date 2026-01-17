@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use tokio::sync::mpsc;
 
 use crate::claude::{ClaudeConfig, ClaudeEvent, ClaudeRunner, ExecutionUsage, ModelAlias};
+use crate::pricing::CostHistoryManager;
+use crate::state::{StateManager, TaskState};
 
 /// Completion detection strategies
 #[derive(Debug, Clone)]
@@ -44,6 +46,12 @@ pub struct LoopConfig {
     pub system_prompt: Option<PathBuf>,
     /// Allowed tools
     pub allowed_tools: Option<String>,
+    /// Enable state persistence
+    pub enable_state: bool,
+    /// Enable cost tracking
+    pub enable_cost_tracking: bool,
+    /// Project directory for state/cost files
+    pub project_dir: Option<PathBuf>,
 }
 
 impl Default for LoopConfig {
@@ -58,6 +66,9 @@ impl Default for LoopConfig {
             readonly: false,
             system_prompt: None,
             allowed_tools: None,
+            enable_state: true,
+            enable_cost_tracking: true,
+            project_dir: None,
         }
     }
 }
@@ -109,14 +120,50 @@ pub struct LoopResult {
     pub final_output: Option<String>,
 }
 
+/// Persistence managers for state and cost tracking
+struct PersistenceManagers {
+    state_manager: Option<StateManager>,
+    cost_manager: Option<CostHistoryManager>,
+}
+
 /// The Loop Engine - implements the self-improvement loop until completion
 pub struct LoopEngine {
     config: LoopConfig,
+    persistence: Option<PersistenceManagers>,
 }
 
 impl LoopEngine {
     pub fn new(config: LoopConfig) -> Self {
-        Self { config }
+        // Initialize persistence managers if enabled
+        let persistence = Self::init_persistence(&config);
+        Self { config, persistence }
+    }
+
+    fn init_persistence(config: &LoopConfig) -> Option<PersistenceManagers> {
+        if !config.enable_state && !config.enable_cost_tracking {
+            return None;
+        }
+
+        let project_dir = config.project_dir.clone()
+            .or_else(|| config.working_dir.clone())
+            .or_else(|| std::env::current_dir().ok())?;
+
+        let state_manager = if config.enable_state {
+            StateManager::new(&project_dir).ok()
+        } else {
+            None
+        };
+
+        let cost_manager = if config.enable_cost_tracking {
+            CostHistoryManager::for_project(&project_dir).ok()
+        } else {
+            None
+        };
+
+        Some(PersistenceManagers {
+            state_manager,
+            cost_manager,
+        })
     }
 
     pub fn with_max_iterations(mut self, max: u32) -> Self {
@@ -221,6 +268,31 @@ impl LoopEngine {
         let mut final_output: Option<String> = None;
         let mut status = LoopStatus::Running;
 
+        // Initialize task state if state management is enabled
+        let mut task_state = if self.config.enable_state {
+            let state = TaskState::new(
+                initial_prompt.to_string(),
+                self.config.model.to_string(),
+                self.config.max_iterations,
+            );
+            Some(state)
+        } else {
+            None
+        };
+
+        // Get task ID for cost tracking
+        let task_id = task_state.as_ref()
+            .map(|s| s.task_id.clone())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+        // Mark task as started and save initial state
+        if let (Some(state), Some(persistence)) = (&mut task_state, &self.persistence) {
+            state.start();
+            if let Some(state_manager) = &persistence.state_manager {
+                let _ = state_manager.save_state(state);
+            }
+        }
+
         while iteration < self.config.max_iterations {
             // Check budget before starting
             if let Some(limit) = self.config.budget_limit {
@@ -290,6 +362,15 @@ impl LoopEngine {
                     total_usage.total_cost_usd += iter_usage.total_cost_usd;
                     total_usage.duration_ms += iter_usage.duration_ms;
 
+                    // Update task state and save
+                    if let (Some(state), Some(persistence)) = (&mut task_state, &self.persistence) {
+                        state.update_iteration(iteration);
+                        state.update_usage(&total_usage);
+                        if let Some(state_manager) = &persistence.state_manager {
+                            let _ = state_manager.save_state(state);
+                        }
+                    }
+
                     previous_output = Some(output_buffer.clone());
                     final_output = Some(output_buffer);
 
@@ -299,6 +380,13 @@ impl LoopEngine {
                     }
                 }
                 Err(e) => {
+                    // Mark task as failed
+                    if let (Some(state), Some(persistence)) = (&mut task_state, &self.persistence) {
+                        state.fail(e.to_string());
+                        if let Some(state_manager) = &persistence.state_manager {
+                            let _ = state_manager.save_state(state);
+                        }
+                    }
                     status = LoopStatus::Error(e.to_string());
                     break;
                 }
@@ -310,6 +398,67 @@ impl LoopEngine {
         // Check if we hit max iterations
         if status == LoopStatus::Running {
             status = LoopStatus::MaxIterationsReached;
+        }
+
+        // Finalize task state based on final status
+        if let Some(ref mut state) = task_state {
+            match &status {
+                LoopStatus::Completed => {
+                    state.complete(final_output.clone());
+                }
+                LoopStatus::MaxIterationsReached | LoopStatus::BudgetExceeded | LoopStatus::Stopped => {
+                    state.interrupt();
+                }
+                LoopStatus::Error(err) => {
+                    state.fail(err.clone());
+                }
+                LoopStatus::Running => {
+                    // Should not happen at this point
+                    state.interrupt();
+                }
+            }
+
+            // Save final state
+            if let Some(persistence) = &self.persistence {
+                if let Some(state_manager) = &persistence.state_manager {
+                    let _ = state_manager.save_state(state);
+
+                    // Archive completed or failed tasks
+                    if matches!(status, LoopStatus::Completed | LoopStatus::Error(_)) {
+                        let _ = state_manager.archive_task(state);
+                    }
+                }
+            }
+        }
+
+        // Record total cost for the task
+        // Note: We re-initialize cost manager here to get a mutable reference
+        if self.config.enable_cost_tracking {
+            let project_dir = self.config.project_dir.clone()
+                .or_else(|| self.config.working_dir.clone())
+                .or_else(|| std::env::current_dir().ok());
+
+            if let Some(ref project_dir) = project_dir {
+                if let Ok(mut cost_manager) = CostHistoryManager::for_project(project_dir) {
+                    let status_str = format!("{:?}", status);
+                    let prompt_summary = if initial_prompt.len() > 50 {
+                        format!("{}...", &initial_prompt[..47])
+                    } else {
+                        initial_prompt.to_string()
+                    };
+                    let _ = cost_manager.record_cost(
+                        &task_id,
+                        &self.config.model.to_string(),
+                        total_usage.input_tokens,
+                        total_usage.output_tokens,
+                        total_usage.cache_read_tokens,
+                        total_usage.cache_creation_tokens,
+                        total_usage.total_cost_usd,
+                        &status_str,
+                        Some(prompt_summary),
+                    );
+                }
+            }
         }
 
         // Send loop finished event

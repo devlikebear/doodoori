@@ -9,6 +9,11 @@ Named after **Doodoori (두두리, 豆豆里)**, the Silla dynasty's blacksmith 
 - **Self-Improvement Loop**: Runs Claude Code repeatedly until task completion using the Loop Engine
 - **Model Selection**: Support for haiku, sonnet, and opus model aliases
 - **Budget Tracking**: Track costs with embedded price.toml pricing data
+- **Cost History**: Persistent cost tracking with daily/monthly summaries
+- **State Management**: Task state persistence for resume capability
+- **Resume Support**: Resume interrupted or failed tasks
+- **Secrets Management**: .env file support with keychain integration
+- **Secret Masking**: Automatic masking of API keys and tokens in logs
 - **Configurable**: Project-level configuration via `doodoori.toml`
 - **Dry Run Mode**: Preview what would be executed without running
 - **Permission Control**: YOLO mode, read-only mode, and custom allowed tools
@@ -154,7 +159,14 @@ workers = 3
 | `doodoori sandbox login` | Login to Claude in sandbox |
 | `doodoori sandbox status` | Show sandbox status |
 | `doodoori sandbox cleanup` | Clean up sandbox resources |
-| `doodoori cost` | View cost tracking |
+| `doodoori resume --list` | List resumable tasks |
+| `doodoori resume <task-id>` | Resume an interrupted task |
+| `doodoori cost` | View cost summary |
+| `doodoori cost --history` | View full cost history |
+| `doodoori cost --daily` | View daily cost summary |
+| `doodoori secret set <key>` | Store secret in keychain |
+| `doodoori secret get <key>` | Retrieve secret from keychain |
+| `doodoori secret list` | List stored secrets |
 | `doodoori config` | Show configuration |
 | `doodoori price` | Show model pricing |
 
@@ -210,7 +222,7 @@ doodoori spec --validate api-spec.md
 - [x] Phase 1: MVP - Basic execution with Loop Engine
 - [x] Phase 2: Spec file system with markdown parsing
 - [x] Phase 3: Sandbox mode with Docker
-- [ ] Phase 4: State management and resume
+- [x] Phase 4: State management, secrets, and resume
 - [ ] Phase 5: Parallel execution
 - [ ] Phase 6: Workflows and TUI dashboard
 

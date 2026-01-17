@@ -3,7 +3,10 @@ pub mod commands;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use commands::{cost::CostArgs, parallel::ParallelArgs, run::RunArgs, sandbox::SandboxArgs, spec::SpecArgs};
+use commands::{
+    cost::CostArgs, parallel::ParallelArgs, resume::ResumeArgs, run::RunArgs,
+    sandbox::SandboxArgs, secret::SecretArgs, spec::SpecArgs,
+};
 
 /// Doodoori - Autonomous CLI tool powered by Claude Code
 ///
@@ -40,6 +43,12 @@ pub enum Commands {
     /// Manage Docker sandbox environment
     Sandbox(SandboxArgs),
 
+    /// Resume an interrupted task
+    Resume(ResumeArgs),
+
+    /// Manage secrets in the system keychain
+    Secret(SecretArgs),
+
     /// View cost history and tracking
     Cost(CostArgs),
 
@@ -66,6 +75,8 @@ impl Cli {
             Commands::Parallel(args) => args.execute().await,
             Commands::Spec(args) => args.execute().await,
             Commands::Sandbox(args) => args.execute().await,
+            Commands::Resume(args) => args.execute().await,
+            Commands::Secret(args) => args.execute().await,
             Commands::Cost(args) => args.execute().await,
             Commands::Config => {
                 println!("Config file: {}", self.config);

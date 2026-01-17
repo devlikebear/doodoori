@@ -5,6 +5,65 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-01-17
+
+### Added
+
+- **State Management**: Task state persistence for resume capability
+  - `TaskState` with UUID-based task identification
+  - `StateManager` for persisting state to `.doodoori/state.json`
+  - Task history stored in `.doodoori/history/`
+  - Automatic state saving at each iteration
+
+- **Resume Command**: Resume interrupted or failed tasks
+  - `doodoori resume <task-id>` to continue a task
+  - `doodoori resume --list` to show resumable tasks
+  - `doodoori resume <task-id> --info` for task details
+  - Support for resuming Running, Interrupted, and Failed tasks
+
+- **Secrets Management**: Unified secrets handling
+  - `EnvLoader` for .env file support with dotenvy integration
+  - Priority order: CLI > .env > System environment
+  - `SecretValue` wrapper with automatic masking in debug output
+  - `SecretsManager` combining env, .env, and keychain sources
+
+- **Keychain Integration** (optional `keychain` feature)
+  - `doodoori secret set/get/delete/list` commands
+  - Secure storage using system keychain via keyring crate
+  - Service name: "doodoori"
+
+- **Secret Masking**: Automatic masking of sensitive data in logs
+  - Patterns for Anthropic, OpenAI, GitHub, AWS API keys
+  - Generic API key and Bearer token detection
+  - Environment variable value masking
+
+- **Cost History**: Persistent cost tracking
+  - `CostEntry` for per-task cost records
+  - `CostHistoryManager` saving to `.doodoori/cost_history.json`
+  - Daily summaries with model breakdown
+  - Monthly totals
+
+- **Cost Command Improvements**
+  - `doodoori cost` shows summary (today, month, all-time)
+  - `doodoori cost --history` for full history
+  - `doodoori cost --daily` for daily breakdown
+  - `doodoori cost --task-id <id>` for task-specific costs
+  - `doodoori cost --reset` to clear history
+
+- **Loop Engine Integration**
+  - Automatic state persistence during execution
+  - Cost recording at task completion
+  - Task archiving on completion/failure
+
+### Changed
+
+- .env files automatically loaded at startup
+- Loop engine now tracks state and records costs
+
+### Tests
+
+- 131 unit tests (28 new tests for state, secrets, cost history)
+
 ## [0.4.1] - 2025-01-17
 
 ### Added

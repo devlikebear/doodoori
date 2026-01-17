@@ -1,5 +1,9 @@
 #![allow(dead_code)]
 
+mod history;
+
+pub use history::{CostEntry, CostHistory, CostHistoryManager, DailySummary};
+
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::HashMap;

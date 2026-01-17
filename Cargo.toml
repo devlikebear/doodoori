@@ -1,6 +1,6 @@
 [package]
 name = "doodoori"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2024"
 description = "Autonomous CLI tool that uses Claude Code internally to complete goals without user intervention"
 authors = ["devlikebear <devlikebear@gmail.com>"]
@@ -70,6 +70,9 @@ full = ["sandbox", "dashboard", "keychain", "price-update"]
 [[bin]]
 name = "doodoori"
 path = "src/main.rs"
+
+[dev-dependencies]
+tempfile = "3.10"
 
 [profile.release]
 lto = true
