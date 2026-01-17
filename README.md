@@ -594,11 +594,17 @@ events = ["completed", "error"]
 
 ## Model Pricing
 
+> **Reference**: https://platform.claude.com/docs/ko/about-claude/models/overview
+
+Doodoori uses Claude Code CLI aliases (`haiku`, `sonnet`, `opus`) which automatically resolve to the best available model.
+
 | Model | Input/MTok | Output/MTok | Best For |
 |-------|------------|-------------|----------|
-| Haiku | $1.00 | $5.00 | Quick tasks, simple operations |
-| Sonnet | $3.00 | $15.00 | Balanced performance, general use |
-| Opus | $5.00 | $25.00 | Complex reasoning, high-quality output |
+| Haiku 4.5 | $1.00 | $5.00 | Quick tasks, simple operations |
+| Sonnet 4.5 | $3.00 | $15.00 | Balanced performance, general use |
+| Opus 4.5 | $5.00 | $25.00 | Complex reasoning, high-quality output |
+
+Pricing data is stored in `price.toml` and can be updated from the official documentation.
 
 ## Spec Files
 
