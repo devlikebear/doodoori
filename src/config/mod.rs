@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use crate::claude::ModelAlias;
+use crate::hooks::HooksConfig;
+use crate::notifications::{NotificationEvent, NotificationsConfig};
 
 /// Main configuration for Doodoori
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -30,6 +32,10 @@ pub struct DoodooriConfig {
     pub logging: LoggingConfig,
     /// Parallel execution settings
     pub parallel: ParallelConfig,
+    /// Hooks configuration
+    pub hooks: HooksConfigFile,
+    /// Notifications configuration
+    pub notifications: NotificationsConfigFile,
 }
 
 impl Default for DoodooriConfig {
@@ -45,6 +51,8 @@ impl Default for DoodooriConfig {
             git: GitConfig::default(),
             logging: LoggingConfig::default(),
             parallel: ParallelConfig::default(),
+            hooks: HooksConfigFile::default(),
+            notifications: NotificationsConfigFile::default(),
         }
     }
 }
@@ -118,6 +126,123 @@ impl Default for ParallelConfig {
             workers: 3,
             isolate_workspaces: false,
         }
+    }
+}
+
+/// Hooks configuration for TOML file (simple string paths)
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct HooksConfigFile {
+    /// Enable hooks
+    pub enabled: bool,
+    /// Pre-run hook script path
+    pub pre_run: Option<String>,
+    /// Post-run hook script path
+    pub post_run: Option<String>,
+    /// On-error hook script path
+    pub on_error: Option<String>,
+    /// On-iteration hook script path
+    pub on_iteration: Option<String>,
+    /// On-complete hook script path
+    pub on_complete: Option<String>,
+    /// Default timeout for hooks in seconds
+    pub timeout_secs: u64,
+}
+
+impl HooksConfigFile {
+    /// Convert to HooksConfig for use with HookExecutor
+    pub fn to_hooks_config(&self) -> HooksConfig {
+        if !self.enabled {
+            return HooksConfig::default().disabled();
+        }
+
+        HooksConfig::from_paths(
+            self.pre_run.as_deref(),
+            self.post_run.as_deref(),
+            self.on_error.as_deref(),
+            self.on_iteration.as_deref(),
+            self.on_complete.as_deref(),
+        )
+    }
+}
+
+/// Notifications configuration for TOML file
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct NotificationsConfigFile {
+    /// Enable notifications globally
+    pub enabled: bool,
+    /// Slack webhook URL
+    pub slack_webhook: Option<String>,
+    /// Discord webhook URL
+    pub discord_webhook: Option<String>,
+    /// Generic webhook URL
+    pub webhook_url: Option<String>,
+    /// Events to notify on (completed, error, started, etc.)
+    #[serde(default = "default_notification_events")]
+    pub events: Vec<String>,
+}
+
+fn default_notification_events() -> Vec<String> {
+    vec!["completed".to_string(), "error".to_string()]
+}
+
+impl NotificationsConfigFile {
+    /// Convert to NotificationsConfig for use with NotificationManager
+    pub fn to_notifications_config(&self) -> NotificationsConfig {
+        use crate::notifications::{SlackConfig, DiscordConfig, WebhookConfig};
+
+        if !self.enabled {
+            return NotificationsConfig::default();
+        }
+
+        let events: Vec<NotificationEvent> = self.events
+            .iter()
+            .filter_map(|e| match e.as_str() {
+                "started" => Some(NotificationEvent::Started),
+                "completed" => Some(NotificationEvent::Completed),
+                "error" => Some(NotificationEvent::Error),
+                "budget_exceeded" => Some(NotificationEvent::BudgetExceeded),
+                "max_iterations" => Some(NotificationEvent::MaxIterations),
+                _ => None,
+            })
+            .collect();
+
+        let mut config = NotificationsConfig {
+            enabled: true,
+            ..Default::default()
+        };
+
+        if let Some(ref url) = self.slack_webhook {
+            config.slack = Some(SlackConfig {
+                webhook_url: url.clone(),
+                channel: None,
+                username: None,
+                icon_emoji: None,
+                events: events.clone(),
+            });
+        }
+
+        if let Some(ref url) = self.discord_webhook {
+            config.discord = Some(DiscordConfig {
+                webhook_url: url.clone(),
+                username: None,
+                avatar_url: None,
+                events: events.clone(),
+            });
+        }
+
+        if let Some(ref url) = self.webhook_url {
+            config.webhooks.push(WebhookConfig {
+                url: url.clone(),
+                method: "POST".to_string(),
+                headers: std::collections::HashMap::new(),
+                events: events.clone(),
+                timeout_secs: 30,
+            });
+        }
+
+        config
     }
 }
 
@@ -225,6 +350,34 @@ progress = true
 workers = 3
 # Isolate workspaces per task
 isolate_workspaces = false
+
+[hooks]
+# Enable hooks
+enabled = true
+# Hook timeout in seconds (default: 60)
+timeout_secs = 60
+# Pre-run hook (before task execution)
+# pre_run = "scripts/pre_run.sh"
+# Post-run hook (after task execution)
+# post_run = "scripts/post_run.sh"
+# On-error hook (when an error occurs)
+# on_error = "scripts/on_error.sh"
+# On-iteration hook (after each loop iteration)
+# on_iteration = "scripts/on_iteration.sh"
+# On-complete hook (when task completes successfully)
+# on_complete = "scripts/on_complete.sh"
+
+[notifications]
+# Enable notifications
+enabled = false
+# Slack webhook URL
+# slack_webhook = "https://hooks.slack.com/services/..."
+# Discord webhook URL
+# discord_webhook = "https://discord.com/api/webhooks/..."
+# Generic webhook URL
+# webhook_url = "https://your-api.com/webhook"
+# Events to notify on: started, completed, error, budget_exceeded, max_iterations
+events = ["completed", "error"]
 "#.to_string()
     }
 }

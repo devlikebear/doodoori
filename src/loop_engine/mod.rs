@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use tokio::sync::mpsc;
 
 use crate::claude::{ClaudeConfig, ClaudeEvent, ClaudeRunner, ExecutionUsage, ModelAlias};
+use crate::hooks::{HookContext, HookExecutor, HookType, HooksConfig};
+use crate::notifications::{NotificationEvent, NotificationManager, NotificationPayload, NotificationsConfig};
 use crate::pricing::CostHistoryManager;
 use crate::state::{StateManager, TaskState};
 
@@ -52,6 +54,14 @@ pub struct LoopConfig {
     pub enable_cost_tracking: bool,
     /// Project directory for state/cost files
     pub project_dir: Option<PathBuf>,
+    /// Hooks configuration
+    pub hooks: HooksConfig,
+    /// Disable hooks execution
+    pub disable_hooks: bool,
+    /// Notifications configuration
+    pub notifications: NotificationsConfig,
+    /// Disable notifications
+    pub disable_notifications: bool,
 }
 
 impl Default for LoopConfig {
@@ -69,6 +79,10 @@ impl Default for LoopConfig {
             enable_state: true,
             enable_cost_tracking: true,
             project_dir: None,
+            hooks: HooksConfig::default(),
+            disable_hooks: false,
+            notifications: NotificationsConfig::default(),
+            disable_notifications: false,
         }
     }
 }
@@ -102,6 +116,12 @@ pub enum LoopEvent {
         iteration: u32,
         usage: ExecutionUsage,
         completed: bool,
+    },
+    /// Hook executed
+    HookExecuted {
+        hook_type: HookType,
+        success: bool,
+        duration_ms: u64,
     },
     /// Loop finished
     LoopFinished {
@@ -260,6 +280,66 @@ impl LoopEngine {
         Ok((rx, handle))
     }
 
+    /// Create hook context for the current execution state
+    fn create_hook_context(
+        &self,
+        task_id: &str,
+        prompt: &str,
+        iteration: Option<u32>,
+        total_iterations: Option<u32>,
+        cost: f64,
+        status: &str,
+        error: Option<&str>,
+    ) -> HookContext {
+        let mut ctx = HookContext::new()
+            .with_task_id(task_id)
+            .with_prompt(prompt)
+            .with_model(self.config.model.to_string())
+            .with_cost(cost)
+            .with_status(status);
+
+        if let Some(iter) = iteration {
+            ctx = ctx.with_iteration(iter);
+        }
+        if let Some(total) = total_iterations {
+            ctx = ctx.with_total_iterations(total);
+        }
+        if let Some(err) = error {
+            ctx = ctx.with_error(err);
+        }
+        if let Some(ref dir) = self.config.working_dir {
+            ctx = ctx.with_working_dir(dir.clone());
+        }
+
+        ctx
+    }
+
+    /// Execute a hook and send event
+    async fn execute_hook(
+        &self,
+        hook_executor: &HookExecutor,
+        hook_type: HookType,
+        context: &HookContext,
+        tx: &mpsc::Sender<LoopEvent>,
+    ) -> Result<bool> {
+        if self.config.disable_hooks {
+            return Ok(true);
+        }
+
+        let result = hook_executor.execute_with_policy(hook_type, context).await?;
+
+        // Send hook event
+        let _ = tx
+            .send(LoopEvent::HookExecuted {
+                hook_type,
+                success: result.success,
+                duration_ms: result.duration_ms,
+            })
+            .await;
+
+        Ok(result.success)
+    }
+
     /// Run the loop internally
     async fn run_loop(&self, initial_prompt: &str, tx: mpsc::Sender<LoopEvent>) -> Result<LoopResult> {
         let mut total_usage = ExecutionUsage::default();
@@ -267,6 +347,22 @@ impl LoopEngine {
         let mut previous_output: Option<String> = None;
         let mut final_output: Option<String> = None;
         let mut status = LoopStatus::Running;
+
+        // Initialize hook executor
+        let working_dir = self.config.working_dir.clone()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let hook_executor = HookExecutor::new(self.config.hooks.clone(), &working_dir);
+
+        // Initialize notification manager
+        let notification_manager = if !self.config.disable_notifications && self.config.notifications.enabled {
+            Some(NotificationManager::new(self.config.notifications.clone()))
+        } else {
+            None
+        };
+
+        // Track start time for duration calculation
+        let start_time = std::time::Instant::now();
 
         // Initialize task state if state management is enabled
         let mut task_state = if self.config.enable_state {
@@ -291,6 +387,66 @@ impl LoopEngine {
             if let Some(state_manager) = &persistence.state_manager {
                 let _ = state_manager.save_state(state);
             }
+        }
+
+        // Send "Started" notification
+        if let Some(ref manager) = notification_manager {
+            let payload = NotificationPayload {
+                event: NotificationEvent::Started,
+                task_id: task_id.clone(),
+                prompt: initial_prompt.to_string(),
+                model: self.config.model.to_string(),
+                iterations: 0,
+                cost_usd: 0.0,
+                duration_ms: 0,
+                error: None,
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                metadata: std::collections::HashMap::new(),
+            };
+            manager.notify_silent(&payload).await;
+        }
+
+        // Execute pre_run hook
+        let pre_run_context = self.create_hook_context(
+            &task_id,
+            initial_prompt,
+            None,
+            Some(self.config.max_iterations),
+            0.0,
+            "starting",
+            None,
+        );
+        if let Err(e) = self.execute_hook(&hook_executor, HookType::PreRun, &pre_run_context, &tx).await {
+            tracing::warn!("Pre-run hook failed: {}", e);
+            status = LoopStatus::Error(format!("Pre-run hook failed: {}", e));
+
+            // Execute on_error hook for pre_run failure
+            let error_context = self.create_hook_context(
+                &task_id,
+                initial_prompt,
+                None,
+                Some(self.config.max_iterations),
+                0.0,
+                "error",
+                Some(&e.to_string()),
+            );
+            let _ = self.execute_hook(&hook_executor, HookType::OnError, &error_context, &tx).await;
+
+            // Return early with error result
+            let _ = tx
+                .send(LoopEvent::LoopFinished {
+                    status: status.clone(),
+                    total_iterations: 0,
+                    total_usage: total_usage.clone(),
+                })
+                .await;
+
+            return Ok(LoopResult {
+                status,
+                iterations: 0,
+                total_usage,
+                final_output: None,
+            });
         }
 
         while iteration < self.config.max_iterations {
@@ -374,12 +530,36 @@ impl LoopEngine {
                     previous_output = Some(output_buffer.clone());
                     final_output = Some(output_buffer);
 
+                    // Execute on_iteration hook
+                    let iter_context = self.create_hook_context(
+                        &task_id,
+                        initial_prompt,
+                        Some(iteration),
+                        Some(self.config.max_iterations),
+                        total_usage.total_cost_usd,
+                        if completed { "completed" } else { "running" },
+                        None,
+                    );
+                    let _ = self.execute_hook(&hook_executor, HookType::OnIteration, &iter_context, &tx).await;
+
                     if completed {
                         status = LoopStatus::Completed;
                         break;
                     }
                 }
                 Err(e) => {
+                    // Execute on_error hook
+                    let error_context = self.create_hook_context(
+                        &task_id,
+                        initial_prompt,
+                        Some(iteration),
+                        Some(self.config.max_iterations),
+                        total_usage.total_cost_usd,
+                        "error",
+                        Some(&e.to_string()),
+                    );
+                    let _ = self.execute_hook(&hook_executor, HookType::OnError, &error_context, &tx).await;
+
                     // Mark task as failed
                     if let (Some(state), Some(persistence)) = (&mut task_state, &self.persistence) {
                         state.fail(e.to_string());
@@ -459,6 +639,74 @@ impl LoopEngine {
                     );
                 }
             }
+        }
+
+        // Execute final hooks based on status
+        let final_status_str = match &status {
+            LoopStatus::Completed => "completed",
+            LoopStatus::MaxIterationsReached => "max_iterations",
+            LoopStatus::BudgetExceeded => "budget_exceeded",
+            LoopStatus::Error(_) => "error",
+            LoopStatus::Stopped => "stopped",
+            LoopStatus::Running => "running",
+        };
+
+        // Execute on_complete hook if task completed successfully
+        if status == LoopStatus::Completed {
+            let complete_context = self.create_hook_context(
+                &task_id,
+                initial_prompt,
+                Some(iteration),
+                Some(self.config.max_iterations),
+                total_usage.total_cost_usd,
+                final_status_str,
+                None,
+            );
+            let _ = self.execute_hook(&hook_executor, HookType::OnComplete, &complete_context, &tx).await;
+        }
+
+        // Execute post_run hook (always runs at the end)
+        let post_run_context = self.create_hook_context(
+            &task_id,
+            initial_prompt,
+            Some(iteration),
+            Some(self.config.max_iterations),
+            total_usage.total_cost_usd,
+            final_status_str,
+            match &status {
+                LoopStatus::Error(e) => Some(e.as_str()),
+                _ => None,
+            },
+        );
+        let _ = self.execute_hook(&hook_executor, HookType::PostRun, &post_run_context, &tx).await;
+
+        // Send final notification based on status
+        if let Some(ref manager) = notification_manager {
+            let notification_event = match &status {
+                LoopStatus::Completed => NotificationEvent::Completed,
+                LoopStatus::MaxIterationsReached => NotificationEvent::MaxIterations,
+                LoopStatus::BudgetExceeded => NotificationEvent::BudgetExceeded,
+                LoopStatus::Error(_) => NotificationEvent::Error,
+                _ => NotificationEvent::Completed, // Stopped/Running treated as completed
+            };
+
+            let payload = NotificationPayload {
+                event: notification_event,
+                task_id: task_id.clone(),
+                prompt: initial_prompt.to_string(),
+                model: self.config.model.to_string(),
+                iterations: iteration + 1,
+                cost_usd: total_usage.total_cost_usd,
+                duration_ms: start_time.elapsed().as_millis() as u64,
+                error: match &status {
+                    LoopStatus::Error(e) => Some(e.clone()),
+                    _ => None,
+                },
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                metadata: std::collections::HashMap::new(),
+            };
+
+            manager.notify_silent(&payload).await;
         }
 
         // Send loop finished event
