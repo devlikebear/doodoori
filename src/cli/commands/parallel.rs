@@ -8,6 +8,7 @@ use crate::executor::{
 };
 use crate::git::sanitize_branch_name;
 use crate::instructions::{SpecFile, SpecParser};
+use crate::output::{OutputFormat, OutputWriter, ParallelOutput, TaskOutput};
 use crate::pricing::format_cost;
 
 /// Run multiple tasks in parallel
@@ -76,6 +77,14 @@ pub struct ParallelArgs {
     /// Auto-create PR on task completion
     #[arg(long)]
     pub auto_pr: bool,
+
+    /// Output format (text, json, json-pretty, yaml, markdown)
+    #[arg(long, short = 'f', default_value = "text")]
+    pub format: String,
+
+    /// Output file path (default: stdout)
+    #[arg(long, short = 'o')]
+    pub output: Option<String>,
 }
 
 impl ParallelArgs {
@@ -202,42 +211,77 @@ impl ParallelArgs {
         // Wait for completion and get final result
         let result = handle.await??;
 
-        // Print detailed results
-        println!("\n=== Task Details ===\n");
-        for task_result in &result.tasks {
-            let short_id = &task_result.task_id[..8.min(task_result.task_id.len())];
-            let status_icon = match task_result.status {
-                TaskStatus::Completed => "✓",
-                TaskStatus::MaxIterationsReached => "⚠",
-                TaskStatus::BudgetExceeded => "💰",
-                TaskStatus::Failed => "✗",
-                TaskStatus::Cancelled => "⊘",
+        // Parse output format
+        let output_format: OutputFormat = self.format.parse().unwrap_or_default();
+
+        if output_format == OutputFormat::Text {
+            // Print detailed results
+            println!("\n=== Task Details ===\n");
+            for task_result in &result.tasks {
+                let short_id = &task_result.task_id[..8.min(task_result.task_id.len())];
+                let status_icon = match task_result.status {
+                    TaskStatus::Completed => "✓",
+                    TaskStatus::MaxIterationsReached => "⚠",
+                    TaskStatus::BudgetExceeded => "💰",
+                    TaskStatus::Failed => "✗",
+                    TaskStatus::Cancelled => "⊘",
+                };
+
+                println!("{} [{}] {}", status_icon, short_id, task_result.prompt_summary);
+                println!(
+                    "   Iterations: {} | Cost: {} | Duration: {}ms",
+                    task_result.iterations,
+                    format_cost(task_result.total_cost),
+                    task_result.duration_ms
+                );
+
+                if let Some(ref error) = task_result.error {
+                    println!("   Error: {}", error);
+                }
+                println!();
+            }
+
+            // Print summary
+            println!("=== Summary ===");
+            println!(
+                "Total: {} tasks ({} succeeded, {} failed)",
+                result.tasks.len(),
+                result.succeeded,
+                result.failed
+            );
+            println!("Total cost: {}", format_cost(result.total_cost));
+            println!("Total time: {}ms", result.total_duration_ms);
+        } else {
+            // Build structured output
+            let mut output = ParallelOutput::new();
+
+            for t in &result.tasks {
+                let mut task_output = TaskOutput::new(t.task_id.clone(), t.prompt_summary.clone())
+                    .with_status(format!("{:?}", t.status))
+                    .with_iterations(t.iterations)
+                    .with_cost(t.total_cost)
+                    .with_duration(t.duration_ms);
+
+                if let Some(ref error) = t.error {
+                    task_output = task_output.with_error(error);
+                }
+
+                output.add_task(task_output);
+            }
+
+            let output = output.with_duration(result.total_duration_ms);
+
+            // Write output
+            let writer = if let Some(ref path) = self.output {
+                OutputWriter::new(output_format).with_file(path)
+            } else {
+                OutputWriter::new(output_format)
             };
 
-            println!("{} [{}] {}", status_icon, short_id, task_result.prompt_summary);
-            println!(
-                "   Iterations: {} | Cost: {} | Duration: {}ms",
-                task_result.iterations,
-                format_cost(task_result.total_cost),
-                task_result.duration_ms
-            );
-
-            if let Some(ref error) = task_result.error {
-                println!("   Error: {}", error);
+            if let Err(e) = writer.write_parallel(&output) {
+                tracing::error!("Failed to write output: {}", e);
             }
-            println!();
         }
-
-        // Print summary
-        println!("=== Summary ===");
-        println!(
-            "Total: {} tasks ({} succeeded, {} failed)",
-            result.tasks.len(),
-            result.succeeded,
-            result.failed
-        );
-        println!("Total cost: {}", format_cost(result.total_cost));
-        println!("Total time: {}ms", result.total_duration_ms);
 
         Ok(())
     }
@@ -503,6 +547,8 @@ mod tests {
             branch_prefix: "feature/".to_string(),
             auto_commit: false,
             auto_pr: false,
+            format: "text".to_string(),
+            output: None,
         }
     }
 
