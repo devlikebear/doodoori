@@ -1,0 +1,49 @@
+# Gitleaks configuration for doodoori
+# https://github.com/gitleaks/gitleaks
+
+title = "Doodoori Gitleaks Configuration"
+
+[extend]
+# Use default gitleaks rules
+useDefault = true
+
+# Allow specific patterns (false positives)
+[allowlist]
+description = "Allowlisted files and patterns"
+
+# Allow test files with fake credentials
+paths = [
+    '''(.*)?test(.*)?\.(rs|toml)$''',
+    '''\.md$''',
+]
+
+# Allow specific patterns that are not real secrets
+regexes = [
+    # Example API keys in documentation
+    '''sk-[A-Za-z0-9]{20}example''',
+    # Placeholder values
+    '''YOUR_API_KEY_HERE''',
+    '''<API_KEY>''',
+    '''REPLACE_ME''',
+]
+
+# Custom rules for this project
+[[rules]]
+id = "anthropic-api-key"
+description = "Anthropic API Key"
+regex = '''(?i)anthropic[_-]?api[_-]?key\s*[=:]\s*['"]?sk-ant-[a-zA-Z0-9-_]{80,}['"]?'''
+tags = ["key", "anthropic"]
+
+[[rules]]
+id = "claude-credentials"
+description = "Claude credentials file content"
+regex = '''(?i)["']?access_token["']?\s*:\s*["'][a-zA-Z0-9-_]{50,}["']'''
+path = '''(?i)\.credentials\.json$'''
+tags = ["key", "claude"]
+
+# Files to ignore completely
+[allowlist.commits]
+# Add commit hashes to ignore if needed
+
+[allowlist.stopwords]
+# Add stopwords that should not trigger alerts

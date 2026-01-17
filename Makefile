@@ -5,7 +5,8 @@
         test test-all clean install uninstall \
         docker-build docker-up docker-down docker-shell docker-logs docker-start \
         sandbox-login sandbox-status sandbox-cleanup sandbox-cleanup-containers sandbox-cleanup-volumes \
-        run run-sandbox run-dry fmt clippy check lint watch watch-test stats doc doc-all help
+        run run-sandbox run-dry fmt clippy check lint watch watch-test stats doc doc-all \
+        install-hooks gitleaks security-scan setup-dev help
 
 # Default target
 all: build
@@ -204,6 +205,32 @@ stats:
 	@cargo tree --depth 1 | wc -l | xargs echo "Direct dependencies:"
 
 # =============================================================================
+# Security
+# =============================================================================
+
+## Install git hooks (gitleaks pre-commit)
+install-hooks:
+	@./scripts/install-hooks.sh
+
+## Run gitleaks scan on entire repo
+gitleaks:
+	gitleaks detect --config=.gitleaks.toml --verbose
+
+## Run security scan (gitleaks + cargo audit if available)
+security-scan: gitleaks
+	@if command -v cargo-audit &> /dev/null; then \
+		echo "Running cargo audit..."; \
+		cargo audit; \
+	else \
+		echo "cargo-audit not installed. Install with: cargo install cargo-audit"; \
+	fi
+
+## Setup development environment (hooks + tools)
+setup-dev: install-hooks
+	@echo "Development environment setup complete!"
+	@echo "Installed: pre-commit hook (gitleaks)"
+
+# =============================================================================
 # Help
 # =============================================================================
 
@@ -247,6 +274,12 @@ help:
 	@echo "  install          Install to ~/.cargo/bin (full features)"
 	@echo "  install-minimal  Install without optional features"
 	@echo "  uninstall        Uninstall"
+	@echo ""
+	@echo "Security:"
+	@echo "  install-hooks    Install git hooks (gitleaks pre-commit)"
+	@echo "  gitleaks         Run gitleaks secret scan"
+	@echo "  security-scan    Run full security scan"
+	@echo "  setup-dev        Setup dev environment with hooks"
 	@echo ""
 	@echo "Other:"
 	@echo "  clean            Clean build artifacts"
