@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-01-17
+
+### Added
+
+- **Watch Mode**: Monitor file changes and automatically run tasks
+  - `doodoori watch "task" --pattern "src/**/*.rs"` to watch for changes
+  - Debouncing to prevent rapid re-runs (default: 500ms)
+  - Configurable ignore patterns (target, .git, node_modules by default)
+  - `--clear` flag to clear screen before each run
+  - `--run-initial` flag to run task immediately on start
+  - `--spec` flag to use spec file instead of prompt
+  - Budget limit per run (default: $1.0 for safety)
+
+- **Watch Configuration Options**:
+  - `--pattern` / `-p`: Glob patterns to watch (can be specified multiple times)
+  - `--dir` / `-d`: Base directory to watch
+  - `--ignore` / `-i`: Patterns to ignore
+  - `--debounce`: Debounce duration in milliseconds
+  - `--model`, `--max-iterations`, `--budget`: Task execution settings
+  - `--yolo`, `--readonly`: Permission settings
+
+### Changed
+
+- Added `notify` and `notify-debouncer-mini` dependencies for file watching
+
+### Tests
+
+- 221 unit tests (4 new tests for watch module)
+
 ## [0.11.0] - 2026-01-17
 
 ### Added

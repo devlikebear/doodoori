@@ -25,6 +25,7 @@ Named after **Doodoori (두두리, 豆豆里)**, the Silla dynasty's blacksmith 
 - **Git Workflow**: Git worktree support, conventional commits, and PR automation
 - **Hooks System**: Execute custom scripts at execution points (pre_run, post_run, on_error, etc.)
 - **Notifications**: Send notifications to Slack, Discord, or webhooks on task events
+- **Watch Mode**: Monitor file changes and automatically run tasks
 
 ## Installation
 
@@ -415,6 +416,51 @@ events = ["completed", "error"]
 - Error message (if applicable)
 - Timestamp
 
+## Watch Mode
+
+Monitor file changes and automatically run tasks:
+
+```bash
+# Watch for changes and run tests
+doodoori watch "Run tests and fix any errors" --pattern "src/**/*.rs"
+
+# Watch with multiple patterns
+doodoori watch -p "src/**/*.rs" -p "tests/**/*.rs" "Run cargo test"
+
+# Use a spec file
+doodoori watch --spec task.md --pattern "src/**/*.rs"
+
+# Clear screen before each run
+doodoori watch --clear "Build and test" -p "**/*.rs"
+
+# Run task immediately on start
+doodoori watch --run-initial "Run tests" -p "src/**/*.rs"
+
+# Custom debounce and budget
+doodoori watch --debounce 1000 --budget 2.0 "Lint and format" -p "**/*.rs"
+
+# Ignore additional patterns
+doodoori watch -i "*.tmp" -i "build/**" "Build project" -p "**/*"
+```
+
+**Watch options:**
+- `--pattern` / `-p`: Glob patterns to watch (default: `**/*`)
+- `--dir` / `-d`: Directory to watch (default: `.`)
+- `--ignore` / `-i`: Patterns to ignore (default: target, .git, .doodoori, node_modules)
+- `--debounce`: Debounce duration in ms (default: 500)
+- `--clear`: Clear screen before each run
+- `--run-initial`: Run task immediately on start
+- `--no-recursive`: Watch only top-level directory
+- `--model`, `--max-iterations`, `--budget`: Task settings
+- `--yolo`, `--readonly`: Permission settings
+
+**Default ignored patterns:**
+- `target/**`
+- `.git/**`
+- `.doodoori/**`
+- `node_modules/**`
+- `*.log`
+
 ## Configuration
 
 Create a `doodoori.toml` in your project root:
@@ -496,6 +542,9 @@ events = ["completed", "error"]
 | `doodoori git pr create` | Create pull request |
 | `doodoori git pr list` | List pull requests |
 | `doodoori git branch list` | List branches |
+| `doodoori watch <prompt>` | Watch files and run task on changes |
+| `doodoori watch --spec <file.md>` | Watch with spec file |
+| `doodoori watch -p "*.rs" <prompt>` | Watch specific patterns |
 | `doodoori config` | Show configuration |
 | `doodoori price` | Show model pricing |
 
@@ -558,6 +607,7 @@ doodoori spec --validate api-spec.md
 - [x] Phase 8: Loop Engine integration (run, resume, parallel, workflow)
 - [x] Phase 9: Hooks system (pre_run, post_run, on_error, on_iteration, on_complete)
 - [x] Phase 10: Notifications (Slack, Discord, Webhook)
+- [x] Phase 11: Watch Mode (file monitoring, auto-run)
 
 ## License
 
