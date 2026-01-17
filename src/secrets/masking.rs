@@ -196,7 +196,8 @@ mod tests {
     #[test]
     fn test_mask_openai_key() {
         let masker = SecretMasker::new();
-        let text = "OPENAI_API_KEY=sk-proj-abc123def456ghi789jkl012mno345pqr";
+        // gitleaks:allow - fake test key
+        let text = "OPENAI_API_KEY=sk-proj-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX";
         let masked = masker.mask(text);
         assert!(masked.contains("sk-***"));
     }
@@ -204,7 +205,8 @@ mod tests {
     #[test]
     fn test_mask_github_token() {
         let masker = SecretMasker::new();
-        let text = "token: ghp_abc123def456ghi789jkl012mno345pqrstu678";
+        // gitleaks:allow - fake test key
+        let text = "token: ghp_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX";
         let masked = masker.mask(text);
         assert!(masked.contains("ghp_***"));
     }
@@ -220,7 +222,8 @@ mod tests {
     #[test]
     fn test_mask_generic_api_key() {
         let masker = SecretMasker::new();
-        let text = "api_key=abcdef123456789012345678901234567890";
+        // gitleaks:allow - fake test key
+        let text = "api_key=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX";
         let masked = masker.mask(text);
         assert!(masked.contains("api_key=***"));
     }
