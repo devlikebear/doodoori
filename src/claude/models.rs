@@ -12,6 +12,7 @@ pub enum ModelAlias {
 
 impl ModelAlias {
     /// Convert alias to full model ID
+    #[allow(dead_code)]
     pub fn to_model_id(&self) -> &'static str {
         match self {
             ModelAlias::Haiku => "claude-haiku-4-5-20251101",

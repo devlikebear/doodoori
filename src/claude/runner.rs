@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 use super::ModelAlias;
 
 /// Configuration for Claude Code execution
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ClaudeConfig {
     /// Model to use
@@ -122,6 +123,7 @@ pub struct UsageStats {
 }
 
 /// Accumulated usage from a Claude execution
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct ExecutionUsage {
     pub input_tokens: u64,
@@ -142,10 +144,12 @@ impl ExecutionUsage {
 }
 
 /// Claude Code CLI runner
+#[allow(dead_code)]
 pub struct ClaudeRunner {
     config: ClaudeConfig,
 }
 
+#[allow(dead_code)]
 impl ClaudeRunner {
     pub fn new(config: ClaudeConfig) -> Self {
         Self { config }
