@@ -1,5 +1,6 @@
 pub mod cost;
 pub mod dashboard;
+pub mod git;
 pub mod parallel;
 pub mod resume;
 pub mod run;

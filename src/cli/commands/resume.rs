@@ -2,7 +2,10 @@
 
 use anyhow::{Context, Result};
 use clap::Args;
+use std::path::PathBuf;
 
+use crate::claude::ModelAlias;
+use crate::loop_engine::{LoopConfig, LoopEngine, LoopEvent, LoopStatus};
 use crate::state::{StateManager, TaskStatus};
 
 /// Arguments for the resume command
@@ -170,6 +173,9 @@ impl ResumeArgs {
     }
 
     async fn resume_task(&self, state_manager: &StateManager, task_id: &str) -> Result<()> {
+        use console::{style, Emoji};
+        use indicatif::{ProgressBar, ProgressStyle};
+
         // Find the task
         let mut state = if let Some(s) = state_manager.load_state()? {
             if s.task_id.starts_with(task_id) || s.short_id() == task_id {
@@ -193,41 +199,155 @@ impl ResumeArgs {
             );
         }
 
-        println!("Resuming task: {} ({})", state.short_id(), state.status);
-        println!("Prompt: {}", state.prompt);
-        println!("Starting from iteration: {}", state.current_iteration);
+        println!("{} Resuming task: {}", Emoji("🔄", ""), state.short_id());
+        println!();
+        println!("  Prompt:     {}", if state.prompt.len() > 50 {
+            format!("{}...", &state.prompt[..47])
+        } else {
+            state.prompt.clone()
+        });
+        println!("  Model:      {}", state.model);
+        println!("  Iteration:  {}/{}", state.current_iteration, state.max_iterations);
+        println!("  Cost so far: ${:.4}", state.total_cost_usd);
 
-        if let Some(from_iter) = self.from_iteration {
+        let start_iteration = if let Some(from_iter) = self.from_iteration {
             if from_iter < state.current_iteration {
-                println!("Resetting to iteration: {}", from_iter);
-                state.current_iteration = from_iter;
+                println!("  Resetting to iteration: {}", from_iter);
+                from_iter
+            } else {
+                state.current_iteration
             }
-        }
+        } else {
+            state.current_iteration
+        };
 
-        // Check for session ID for context carry-over
-        if state.session_id.is_some() {
-            println!("Session context available for --continue");
-        }
+        println!();
 
         // Update status to running
         state.status = TaskStatus::Running;
         state_manager.save_state(&state)?;
 
-        // TODO: Actually resume the task using loop engine
-        // This would call the loop engine with the saved state
-        // For now, we just show what would happen
+        // Parse model from state
+        let model: ModelAlias = state.model.parse().unwrap_or(ModelAlias::Sonnet);
 
-        println!();
-        println!("Resume functionality is ready.");
-        println!("Full integration with loop engine will be completed in the next step.");
-        println!();
-        println!("To manually continue with Claude CLI:");
-        if let Some(ref session_id) = state.session_id {
-            println!("  claude --continue {} -p \"Continue the task\"", session_id);
-        } else {
-            println!("  claude -p \"{}\"", state.prompt);
+        // Calculate remaining iterations
+        let remaining_iterations = state.max_iterations.saturating_sub(start_iteration);
+        if remaining_iterations == 0 {
+            println!("{} No iterations remaining (max: {})", Emoji("⚠️", "[!]"), state.max_iterations);
+            return Ok(());
+        }
+
+        // Build continuation prompt
+        let resume_prompt = format!(
+            "Continue working on the task. You are resuming from iteration {}.\n\n\
+            Original task: {}\n\n\
+            When the task is complete, output: <promise>COMPLETE</promise>",
+            start_iteration,
+            state.prompt
+        );
+
+        // Build loop configuration
+        let work_dir = std::env::current_dir().ok();
+        let loop_config = LoopConfig {
+            max_iterations: remaining_iterations,
+            budget_limit: None, // Could be calculated from original budget - spent
+            model,
+            working_dir: work_dir.clone(),
+            yolo_mode: false,
+            readonly: false,
+            system_prompt: None,
+            allowed_tools: None,
+            enable_state: true,
+            enable_cost_tracking: true,
+            project_dir: work_dir,
+            ..Default::default()
+        };
+
+        let engine = LoopEngine::new(loop_config);
+
+        // Create progress bar
+        let progress = ProgressBar::new(remaining_iterations as u64);
+        progress.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} iterations ({msg})")
+                .unwrap()
+                .progress_chars("█▓░"),
+        );
+
+        // Execute with event handling
+        let (mut rx, handle) = engine.execute(&resume_prompt).await?;
+
+        let mut total_cost = state.total_cost_usd;
+
+        while let Some(event) = rx.recv().await {
+            match event {
+                LoopEvent::IterationStarted { iteration } => {
+                    progress.set_position(iteration as u64);
+                    progress.set_message(format!("${:.4}", total_cost));
+                }
+                LoopEvent::ClaudeEvent(claude_event) => {
+                    tracing::debug!("Claude event: {:?}", claude_event);
+                }
+                LoopEvent::IterationCompleted { iteration, usage, completed } => {
+                    total_cost += usage.total_cost_usd;
+                    progress.set_position((iteration + 1) as u64);
+                    progress.set_message(format!("${:.4}", total_cost));
+
+                    if completed {
+                        progress.finish_with_message(format!("${:.4} - Completed!", total_cost));
+                    }
+                }
+                LoopEvent::HookExecuted { hook_type, success, duration_ms } => {
+                    tracing::debug!("Hook {}: {} ({}ms)", hook_type, success, duration_ms);
+                }
+                LoopEvent::LoopFinished { status, total_iterations, total_usage } => {
+                    progress.finish_and_clear();
+                    println!();
+                    self.print_result(&status, start_iteration + total_iterations, &total_usage, total_cost);
+                }
+            }
+        }
+
+        // Wait for the loop to finish
+        let result = handle.await??;
+
+        // Print final status if not already printed
+        if result.status != LoopStatus::Completed {
+            println!();
+            self.print_result(&result.status, start_iteration + result.iterations, &result.total_usage, total_cost);
         }
 
         Ok(())
+    }
+
+    /// Print the final result
+    fn print_result(
+        &self,
+        status: &LoopStatus,
+        total_iterations: u32,
+        usage: &crate::claude::ExecutionUsage,
+        total_cost: f64,
+    ) {
+        use console::{style, Emoji};
+
+        let (emoji, status_text, color) = match status {
+            LoopStatus::Completed => (Emoji("✅", "[OK]"), "Completed", console::Color::Green),
+            LoopStatus::MaxIterationsReached => (Emoji("⚠️", "[!]"), "Max iterations reached", console::Color::Yellow),
+            LoopStatus::BudgetExceeded => (Emoji("💸", "[$]"), "Budget exceeded", console::Color::Yellow),
+            LoopStatus::Stopped => (Emoji("🛑", "[X]"), "Stopped", console::Color::Red),
+            LoopStatus::Error(e) => {
+                println!("{} Error: {}", Emoji("❌", "[ERR]"), style(e).red());
+                return;
+            }
+            LoopStatus::Running => (Emoji("🔄", "[~]"), "Running", console::Color::Blue),
+        };
+
+        println!("{} {}", emoji, style(status_text).fg(color).bold());
+        println!();
+        println!("  Total iterations: {}", total_iterations);
+        println!("  Session tokens:   {} in / {} out", usage.input_tokens, usage.output_tokens);
+        println!("  Session cost:     ${:.4}", usage.total_cost_usd);
+        println!("  Total cost:       ${:.4}", total_cost);
+        println!("  Duration:         {:.2}s", usage.duration_ms as f64 / 1000.0);
     }
 }
