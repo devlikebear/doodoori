@@ -1,5 +1,8 @@
 use anyhow::Result;
 use clap::Args;
+use std::path::Path;
+
+use crate::instructions::{validate, SpecParser};
 
 /// Generate or manage spec files
 #[derive(Args, Debug)]
@@ -18,12 +21,20 @@ pub struct SpecArgs {
     /// Validate an existing spec file
     #[arg(long)]
     pub validate: Option<String>,
+
+    /// Show parsed spec info
+    #[arg(long)]
+    pub info: Option<String>,
 }
 
 impl SpecArgs {
     pub async fn execute(&self) -> Result<()> {
         if let Some(ref validate_path) = self.validate {
             return self.validate_spec(validate_path).await;
+        }
+
+        if let Some(ref info_path) = self.info {
+            return self.show_spec_info(info_path).await;
         }
 
         if self.interactive {
@@ -37,6 +48,7 @@ impl SpecArgs {
         println!("Usage: doodoori spec <description> [-o output.md]");
         println!("       doodoori spec --interactive [-o output.md]");
         println!("       doodoori spec --validate <spec.md>");
+        println!("       doodoori spec --info <spec.md>");
 
         Ok(())
     }
@@ -45,96 +57,117 @@ impl SpecArgs {
         let output = self.output.clone().unwrap_or_else(|| "spec.md".to_string());
 
         println!("Generating spec for: {}", description);
-        println!("Output: {}", output);
 
-        // TODO: Use Claude to generate spec
-        let spec_content = format!(
-            r#"# Task: {}
+        // Generate spec using the parser
+        let spec = SpecParser::generate_spec(description, None);
+        let content = SpecParser::to_markdown(&spec);
 
-## Objective
-{}
-
-## Model
-sonnet
-
-## Requirements
-- [ ] Requirement 1
-- [ ] Requirement 2
-- [ ] Requirement 3
-
-## Constraints
-- Constraint 1
-- Constraint 2
-
-## Completion Criteria
-All requirements implemented and tested
-
-## Max Iterations
-50
-
-## Completion Promise
-<promise>COMPLETE</promise>
-"#,
-            description, description
-        );
-
-        tokio::fs::write(&output, spec_content).await?;
-        println!("✓ Spec file created: {}", output);
+        tokio::fs::write(&output, content).await?;
+        println!("Spec file created: {}", output);
 
         Ok(())
     }
 
     async fn interactive_generate(&self) -> Result<()> {
         println!("Interactive spec generation not yet implemented");
-        // TODO: Interactive prompts for spec creation
+        println!("Use: doodoori spec \"<description>\" instead");
         Ok(())
     }
 
     async fn validate_spec(&self, path: &str) -> Result<()> {
-        println!("Validating spec: {}", path);
+        println!("Validating spec: {}\n", path);
 
-        let content = tokio::fs::read_to_string(path).await?;
+        // Parse the spec file
+        let spec = SpecParser::parse_file(Path::new(path))?;
 
-        // Basic validation
-        let mut errors = Vec::new();
-        let mut warnings = Vec::new();
+        // Run validation
+        let result = validate(&spec);
 
-        if !content.contains("# Task:") && !content.contains("# Spec:") {
-            errors.push("Missing title (# Task: or # Spec:)");
+        // Show parsed info
+        println!("Title: {}", spec.title);
+        println!("Model: {:?}", spec.effective_model());
+        println!("Max iterations: {}", spec.effective_max_iterations());
+        if !spec.requirements.is_empty() {
+            println!("Requirements: {}", spec.requirements.len());
         }
-
-        if !content.contains("## Objective") {
-            errors.push("Missing ## Objective section");
+        if !spec.tasks.is_empty() {
+            println!("Tasks: {}", spec.tasks.len());
         }
+        println!();
 
-        if !content.contains("## Requirements") {
-            warnings.push("Missing ## Requirements section");
-        }
-
-        if !content.contains("<promise>") {
-            warnings.push("Missing completion promise (<promise>...</promise>)");
-        }
-
-        if errors.is_empty() {
-            println!("✓ Spec is valid");
+        // Show validation results
+        if result.is_valid() {
+            println!("Validation: PASSED");
         } else {
-            println!("✗ Validation errors:");
-            for err in &errors {
-                println!("  - {}", err);
+            println!("Validation: FAILED");
+            println!("\nErrors:");
+            for err in &result.errors {
+                println!("  - [{}] {}", err.field, err.message);
             }
         }
 
-        if !warnings.is_empty() {
-            println!("⚠ Warnings:");
-            for warn in &warnings {
-                println!("  - {}", warn);
+        if result.has_warnings() {
+            println!("\nWarnings:");
+            for warn in &result.warnings {
+                println!("  - [{}] {}", warn.field, warn.message);
             }
         }
 
-        if errors.is_empty() {
+        if result.is_valid() {
             Ok(())
         } else {
             anyhow::bail!("Spec validation failed")
         }
+    }
+
+    async fn show_spec_info(&self, path: &str) -> Result<()> {
+        println!("Spec Info: {}\n", path);
+
+        let spec = SpecParser::parse_file(Path::new(path))?;
+
+        println!("Title: {}", spec.title);
+        println!("Objective: {}", spec.objective);
+        println!("Model: {:?}", spec.effective_model());
+        println!("Max Iterations: {}", spec.effective_max_iterations());
+        println!("Completion Promise: {}", spec.effective_completion_promise());
+
+        if let Some(budget) = spec.budget {
+            println!("Budget: ${:.2}", budget);
+        }
+
+        if !spec.requirements.is_empty() {
+            println!("\nRequirements ({}):", spec.requirements.len());
+            for (i, req) in spec.requirements.iter().enumerate() {
+                let status = if req.completed { "[x]" } else { "[ ]" };
+                println!("  {}. {} {}", i + 1, status, req.description);
+            }
+        }
+
+        if !spec.constraints.is_empty() {
+            println!("\nConstraints ({}):", spec.constraints.len());
+            for constraint in &spec.constraints {
+                println!("  - {}", constraint);
+            }
+        }
+
+        if !spec.tasks.is_empty() {
+            println!("\nTasks ({}):", spec.tasks.len());
+            for task in &spec.tasks {
+                let deps = if task.depends_on.is_empty() {
+                    "none".to_string()
+                } else {
+                    task.depends_on.join(", ")
+                };
+                println!(
+                    "  - {} (model: {:?}, priority: {}, deps: {})",
+                    task.id,
+                    task.model.as_ref().unwrap_or(&spec.effective_model()),
+                    task.priority,
+                    deps
+                );
+            }
+        }
+
+        Ok(())
     }
 }
