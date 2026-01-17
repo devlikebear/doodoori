@@ -25,8 +25,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install Claude Code CLI globally
 RUN npm install -g @anthropic-ai/claude-code
 
-# Create non-root user for security
-RUN useradd -m -s /bin/bash -u 1000 doodoori \
+# Create non-root user for security (UID auto-assigned to avoid conflicts)
+RUN useradd -m -s /bin/bash doodoori \
     && mkdir -p /workspace \
     && chown -R doodoori:doodoori /workspace
 

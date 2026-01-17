@@ -93,48 +93,66 @@ impl SandboxRunner {
             .as_ref()
             .context("Sandbox not initialized. Call init() first.")?;
 
-        // Build Claude command
-        let mut cmd = vec!["claude", "-p", prompt, "--output-format", "stream-json"];
+        // Build Claude command arguments
+        // Note: --verbose is required when using --output-format=stream-json with -p
+        let mut claude_args = vec![
+            "-p".to_string(),
+            prompt.to_string(),
+            "--output-format".to_string(),
+            "stream-json".to_string(),
+            "--verbose".to_string(),
+        ];
 
         // Add model if specified
-        let model_arg;
         if let Some(ref model) = options.model {
-            model_arg = format!("--model={}", model);
-            cmd.push(&model_arg);
+            claude_args.push(format!("--model={}", model));
         }
 
         // Add allowed tools
-        let tools_arg;
         if let Some(ref tools) = options.allowed_tools {
-            tools_arg = format!("--allowedTools={}", tools);
-            cmd.push(&tools_arg);
+            claude_args.push(format!("--allowedTools={}", tools));
         }
 
         // Add YOLO mode
         if options.yolo {
-            cmd.push("--dangerously-skip-permissions");
+            claude_args.push("--dangerously-skip-permissions".to_string());
         }
 
         // Add session continue if provided
-        let session_arg;
         if let Some(ref session_id) = options.session_id {
-            session_arg = format!("--continue={}", session_id);
-            cmd.push(&session_arg);
+            claude_args.push(format!("--continue={}", session_id));
         }
 
-        tracing::debug!("Executing in sandbox: {:?}", cmd);
+        tracing::debug!("Executing claude in sandbox with args: {:?}", claude_args);
 
-        // Execute command
-        let output = self
-            .container_manager
-            .exec_command(container_id, cmd, options.env.clone())
-            .await?;
+        // Use docker exec command directly instead of bollard exec
+        // bollard exec has issues with output buffering for long-running commands
+        let output = tokio::process::Command::new("docker")
+            .arg("exec")
+            .arg(container_id)
+            .arg("claude")
+            .args(&claude_args)
+            .output()
+            .await
+            .context("Failed to execute docker exec")?;
 
-        let success = output.success();
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let exit_code = output.status.code().unwrap_or(-1) as i64;
+
+        tracing::debug!("Claude execution completed: exit_code={}", exit_code);
+
+        let exec_output = super::container::ExecOutput {
+            stdout,
+            stderr,
+            exit_code,
+        };
+
+        let success = exec_output.success();
 
         Ok(SandboxResult {
             container_id: container_id.clone(),
-            output,
+            output: exec_output,
             success,
         })
     }
@@ -274,7 +292,9 @@ pub struct SandboxRunnerBuilder {
     image: Option<String>,
     network: Option<NetworkMode>,
     workspace: Option<PathBuf>,
-    mount_claude_config: Option<bool>,
+    use_claude_volume: Option<bool>,
+    claude_volume_name: Option<String>,
+    mount_host_claude_config: Option<bool>,
     env_vars: HashMap<String, String>,
 }
 
@@ -297,9 +317,21 @@ impl SandboxRunnerBuilder {
         self
     }
 
-    /// Set whether to mount Claude config
-    pub fn mount_claude_config(mut self, mount: bool) -> Self {
-        self.mount_claude_config = Some(mount);
+    /// Set whether to use Docker volume for Claude credentials (recommended)
+    pub fn use_claude_volume(mut self, use_volume: bool) -> Self {
+        self.use_claude_volume = Some(use_volume);
+        self
+    }
+
+    /// Set the Docker volume name for Claude credentials
+    pub fn claude_volume_name(mut self, name: impl Into<String>) -> Self {
+        self.claude_volume_name = Some(name.into());
+        self
+    }
+
+    /// Set whether to mount host Claude config (NOT recommended on macOS)
+    pub fn mount_host_claude_config(mut self, mount: bool) -> Self {
+        self.mount_host_claude_config = Some(mount);
         self
     }
 
@@ -325,8 +357,16 @@ impl SandboxRunnerBuilder {
             config_builder = config_builder.workspace(workspace);
         }
 
-        if let Some(mount) = self.mount_claude_config {
-            config_builder = config_builder.mount_claude_config(mount);
+        if let Some(use_volume) = self.use_claude_volume {
+            config_builder = config_builder.use_claude_volume(use_volume);
+        }
+
+        if let Some(volume_name) = self.claude_volume_name {
+            config_builder = config_builder.claude_volume_name(volume_name);
+        }
+
+        if let Some(mount) = self.mount_host_claude_config {
+            config_builder = config_builder.mount_host_claude_config(mount);
         }
 
         for (k, v) in self.env_vars {

@@ -65,8 +65,12 @@ pub struct SandboxConfig {
     pub image: String,
     /// Network mode
     pub network: NetworkMode,
-    /// Whether to mount ~/.claude for authentication
-    pub mount_claude_config: bool,
+    /// Whether to use Docker volume for Claude credentials (recommended)
+    pub use_claude_volume: bool,
+    /// Docker volume name for Claude credentials
+    pub claude_volume_name: String,
+    /// Whether to mount host ~/.claude (NOT recommended on macOS due to Keychain)
+    pub mount_host_claude_config: bool,
     /// Working directory to mount
     pub workspace_dir: Option<PathBuf>,
     /// Container path for workspace
@@ -90,7 +94,9 @@ impl Default for SandboxConfig {
         Self {
             image: "doodoori/sandbox:latest".to_string(),
             network: NetworkMode::Bridge,
-            mount_claude_config: true,
+            use_claude_volume: true,
+            claude_volume_name: "doodoori-claude-credentials".to_string(),
+            mount_host_claude_config: false, // Disabled by default (Keychain issues on macOS)
             workspace_dir: None,
             workspace_container_path: PathBuf::from("/workspace"),
             extra_mounts: Vec::new(),
@@ -118,12 +124,13 @@ impl SandboxConfig {
             mounts.push(MountConfig::rw(workspace.clone(), &self.workspace_container_path));
         }
 
-        // Claude config mount (read-only)
-        if self.mount_claude_config {
+        // Host Claude config mount (NOT recommended on macOS due to Keychain issues)
+        // Only mount if explicitly enabled AND not using Docker volume
+        if self.mount_host_claude_config && !self.use_claude_volume {
             if let Some(home) = dirs::home_dir() {
                 let claude_path = home.join(".claude");
                 if claude_path.exists() {
-                    mounts.push(MountConfig::ro(claude_path, "/home/doodoori/.claude"));
+                    mounts.push(MountConfig::rw(claude_path, "/home/doodoori/.claude"));
                 }
             }
         }
@@ -132,6 +139,16 @@ impl SandboxConfig {
         mounts.extend(self.extra_mounts.clone());
 
         mounts
+    }
+
+    /// Check if Docker volume should be used for Claude credentials
+    pub fn should_use_claude_volume(&self) -> bool {
+        self.use_claude_volume
+    }
+
+    /// Get the Docker volume name for Claude credentials
+    pub fn get_claude_volume_name(&self) -> &str {
+        &self.claude_volume_name
     }
 
     /// Get environment variables including automatic ones
@@ -157,7 +174,9 @@ impl SandboxConfig {
 pub struct SandboxConfigBuilder {
     image: Option<String>,
     network: Option<NetworkMode>,
-    mount_claude_config: Option<bool>,
+    use_claude_volume: Option<bool>,
+    claude_volume_name: Option<String>,
+    mount_host_claude_config: Option<bool>,
     workspace_dir: Option<PathBuf>,
     workspace_container_path: Option<PathBuf>,
     extra_mounts: Vec<MountConfig>,
@@ -181,9 +200,21 @@ impl SandboxConfigBuilder {
         self
     }
 
-    /// Set whether to mount Claude config
-    pub fn mount_claude_config(mut self, mount: bool) -> Self {
-        self.mount_claude_config = Some(mount);
+    /// Set whether to use Docker volume for Claude credentials (recommended)
+    pub fn use_claude_volume(mut self, use_volume: bool) -> Self {
+        self.use_claude_volume = Some(use_volume);
+        self
+    }
+
+    /// Set the Docker volume name for Claude credentials
+    pub fn claude_volume_name(mut self, name: impl Into<String>) -> Self {
+        self.claude_volume_name = Some(name.into());
+        self
+    }
+
+    /// Set whether to mount host Claude config (NOT recommended on macOS)
+    pub fn mount_host_claude_config(mut self, mount: bool) -> Self {
+        self.mount_host_claude_config = Some(mount);
         self
     }
 
@@ -241,7 +272,9 @@ impl SandboxConfigBuilder {
         SandboxConfig {
             image: self.image.unwrap_or(default.image),
             network: self.network.unwrap_or(default.network),
-            mount_claude_config: self.mount_claude_config.unwrap_or(default.mount_claude_config),
+            use_claude_volume: self.use_claude_volume.unwrap_or(default.use_claude_volume),
+            claude_volume_name: self.claude_volume_name.unwrap_or(default.claude_volume_name),
+            mount_host_claude_config: self.mount_host_claude_config.unwrap_or(default.mount_host_claude_config),
             workspace_dir: self.workspace_dir,
             workspace_container_path: self.workspace_container_path.unwrap_or(default.workspace_container_path),
             extra_mounts: self.extra_mounts,

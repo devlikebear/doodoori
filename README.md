@@ -57,8 +57,24 @@ Sandbox mode runs Claude Code inside a Docker container for isolated execution:
 ```bash
 # Build with sandbox support
 cargo build --release --features sandbox
+```
 
-# Run in sandbox
+### First-time Setup (Authentication)
+
+Sandbox mode uses a Docker volume for Claude credentials. This is required for subscription-based authentication (macOS Keychain is not accessible from Docker containers):
+
+```bash
+# Login to Claude in sandbox (one-time setup)
+doodoori sandbox login
+
+# Or with custom options
+doodoori sandbox login --image doodoori/sandbox:latest --volume my-credentials
+```
+
+### Running in Sandbox
+
+```bash
+# Run in sandbox (after login)
 doodoori run --sandbox "Your task here"
 
 # Custom Docker image
@@ -70,15 +86,31 @@ doodoori run --sandbox --network none "No network access"
 doodoori run --sandbox --network host "Host networking"
 ```
 
-**Build the sandbox image:**
+### Sandbox Management
+
+```bash
+# Check sandbox status
+doodoori sandbox status
+
+# Cleanup resources
+doodoori sandbox cleanup --volumes    # Remove credentials volume
+doodoori sandbox cleanup --containers # Remove containers
+doodoori sandbox cleanup --all        # Remove everything
+```
+
+### Build the Sandbox Image
+
 ```bash
 docker build -t doodoori/sandbox:latest -f docker/Dockerfile.sandbox .
+
+# Or using make
+make docker-build
 ```
 
 **Sandbox features:**
 - Isolated filesystem (only mounted workspace)
-- Automatic Claude credentials mounting (~/.claude)
-- Environment variable passing (ANTHROPIC_API_KEY)
+- Docker volume-based Claude credentials (secure for subscription auth)
+- Environment variable passing (ANTHROPIC_API_KEY for API key users)
 - Optional network isolation
 - Non-root execution for security
 
@@ -119,6 +151,9 @@ workers = 3
 | `doodoori spec <description>` | Generate a spec file |
 | `doodoori spec --validate <file.md>` | Validate a spec file |
 | `doodoori spec --info <file.md>` | Show parsed spec information |
+| `doodoori sandbox login` | Login to Claude in sandbox |
+| `doodoori sandbox status` | Show sandbox status |
+| `doodoori sandbox cleanup` | Clean up sandbox resources |
 | `doodoori cost` | View cost tracking |
 | `doodoori config` | Show configuration |
 | `doodoori price` | Show model pricing |

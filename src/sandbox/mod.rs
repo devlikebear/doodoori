@@ -26,7 +26,9 @@ mod tests {
         let config = SandboxConfig::default();
         assert_eq!(config.image, "doodoori/sandbox:latest");
         assert_eq!(config.network, NetworkMode::Bridge);
-        assert!(config.mount_claude_config);
+        // By default, use Docker volume (not host mount)
+        assert!(config.use_claude_volume);
+        assert!(!config.mount_host_claude_config);
     }
 
     #[test]
@@ -34,12 +36,14 @@ mod tests {
         let config = SandboxConfig::builder()
             .image("custom-image:v1")
             .network(NetworkMode::None)
-            .mount_claude_config(false)
+            .use_claude_volume(false)
+            .mount_host_claude_config(true)
             .build();
 
         assert_eq!(config.image, "custom-image:v1");
         assert_eq!(config.network, NetworkMode::None);
-        assert!(!config.mount_claude_config);
+        assert!(!config.use_claude_volume);
+        assert!(config.mount_host_claude_config);
     }
 
     #[test]

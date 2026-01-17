@@ -3,7 +3,7 @@ pub mod commands;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use commands::{cost::CostArgs, parallel::ParallelArgs, run::RunArgs, spec::SpecArgs};
+use commands::{cost::CostArgs, parallel::ParallelArgs, run::RunArgs, sandbox::SandboxArgs, spec::SpecArgs};
 
 /// Doodoori - Autonomous CLI tool powered by Claude Code
 ///
@@ -37,6 +37,9 @@ pub enum Commands {
     /// Generate or manage spec files
     Spec(SpecArgs),
 
+    /// Manage Docker sandbox environment
+    Sandbox(SandboxArgs),
+
     /// View cost history and tracking
     Cost(CostArgs),
 
@@ -62,6 +65,7 @@ impl Cli {
             Commands::Run(args) => args.execute().await,
             Commands::Parallel(args) => args.execute().await,
             Commands::Spec(args) => args.execute().await,
+            Commands::Sandbox(args) => args.execute().await,
             Commands::Cost(args) => args.execute().await,
             Commands::Config => {
                 println!("Config file: {}", self.config);
@@ -426,5 +430,74 @@ mod tests {
         // Should fail without prompt or spec
         let result = Cli::try_parse_from(["doodoori", "run"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cli_sandbox_login() {
+        let cli = Cli::try_parse_from(["doodoori", "sandbox", "login"]).unwrap();
+
+        match cli.command {
+            Commands::Sandbox(args) => {
+                match args.command {
+                    commands::sandbox::SandboxCommand::Login(login_args) => {
+                        assert_eq!(login_args.image, "doodoori/sandbox:latest");
+                        assert_eq!(login_args.volume, "doodoori-claude-credentials");
+                    }
+                    _ => panic!("Expected Login subcommand"),
+                }
+            }
+            _ => panic!("Expected Sandbox command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_sandbox_login_custom() {
+        let cli = Cli::try_parse_from([
+            "doodoori", "sandbox", "login",
+            "--image", "custom:v1",
+            "--volume", "my-volume"
+        ]).unwrap();
+
+        match cli.command {
+            Commands::Sandbox(args) => {
+                match args.command {
+                    commands::sandbox::SandboxCommand::Login(login_args) => {
+                        assert_eq!(login_args.image, "custom:v1");
+                        assert_eq!(login_args.volume, "my-volume");
+                    }
+                    _ => panic!("Expected Login subcommand"),
+                }
+            }
+            _ => panic!("Expected Sandbox command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_sandbox_status() {
+        let cli = Cli::try_parse_from(["doodoori", "sandbox", "status"]).unwrap();
+
+        match cli.command {
+            Commands::Sandbox(args) => {
+                matches!(args.command, commands::sandbox::SandboxCommand::Status);
+            }
+            _ => panic!("Expected Sandbox command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_sandbox_cleanup_all() {
+        let cli = Cli::try_parse_from(["doodoori", "sandbox", "cleanup", "--all"]).unwrap();
+
+        match cli.command {
+            Commands::Sandbox(args) => {
+                match args.command {
+                    commands::sandbox::SandboxCommand::Cleanup(cleanup_args) => {
+                        assert!(cleanup_args.all);
+                    }
+                    _ => panic!("Expected Cleanup subcommand"),
+                }
+            }
+            _ => panic!("Expected Sandbox command"),
+        }
     }
 }

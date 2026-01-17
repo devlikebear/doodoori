@@ -187,10 +187,12 @@ impl ClaudeRunner {
 
     /// Build the command arguments for Claude Code
     fn build_args(&self, prompt: &str) -> Vec<String> {
+        // Note: --verbose is required when using --output-format=stream-json with --print
         let mut args = vec![
             "--print".to_string(),
             "--output-format".to_string(),
             "stream-json".to_string(),
+            "--verbose".to_string(),
             "--model".to_string(),
             self.config.model.to_model_id().to_string(),
         ];
@@ -332,6 +334,7 @@ mod tests {
 
         assert!(args.contains(&"--print".to_string()));
         assert!(args.contains(&"stream-json".to_string()));
+        assert!(args.contains(&"--verbose".to_string()));
         assert!(args.contains(&"--prompt".to_string()));
         assert!(args.contains(&"Test prompt".to_string()));
     }

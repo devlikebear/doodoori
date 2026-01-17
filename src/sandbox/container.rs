@@ -13,6 +13,7 @@ use bollard::{
     },
     exec::{CreateExecOptions, StartExecResults},
     image::CreateImageOptions,
+    volume::CreateVolumeOptions,
     Docker,
 };
 
@@ -111,15 +112,55 @@ impl ContainerManager {
         anyhow::bail!("Sandbox feature not enabled. Rebuild with --features sandbox")
     }
 
+    /// Ensure a Docker volume exists for storing Claude credentials
+    #[cfg(feature = "sandbox")]
+    pub async fn ensure_volume(&self, volume_name: &str) -> Result<()> {
+        // Check if volume exists
+        match self.docker.inspect_volume(volume_name).await {
+            Ok(_) => {
+                tracing::debug!("Volume {} already exists", volume_name);
+                return Ok(());
+            }
+            Err(_) => {
+                // Volume doesn't exist, create it
+                tracing::info!("Creating Docker volume: {}", volume_name);
+            }
+        }
+
+        let options = CreateVolumeOptions {
+            name: volume_name,
+            driver: "local",
+            ..Default::default()
+        };
+
+        self.docker
+            .create_volume(options)
+            .await
+            .context("Failed to create Docker volume")?;
+
+        tracing::info!("Created Docker volume: {}", volume_name);
+        Ok(())
+    }
+
+    #[cfg(not(feature = "sandbox"))]
+    pub async fn ensure_volume(&self, _volume_name: &str) -> Result<()> {
+        anyhow::bail!("Sandbox feature not enabled. Rebuild with --features sandbox")
+    }
+
     /// Create a container from config
     #[cfg(feature = "sandbox")]
     pub async fn create_container(&self, name: &str, config: &SandboxConfig) -> Result<String> {
         // Ensure image exists
         self.ensure_image(&config.image).await?;
 
+        // Ensure Claude credentials volume exists if using Docker volume
+        if config.should_use_claude_volume() {
+            self.ensure_volume(config.get_claude_volume_name()).await?;
+        }
+
         // Build mounts
         let mounts = config.all_mounts();
-        let binds: Vec<String> = mounts
+        let mut binds: Vec<String> = mounts
             .iter()
             .map(|m| {
                 let mode = if m.read_only { "ro" } else { "rw" };
@@ -132,6 +173,14 @@ impl ContainerManager {
             })
             .collect();
 
+        // Add Docker volume for Claude credentials if enabled
+        if config.should_use_claude_volume() {
+            binds.push(format!(
+                "{}:/home/doodoori/.claude:rw",
+                config.get_claude_volume_name()
+            ));
+        }
+
         // Build environment variables
         let env: Vec<String> = config
             .all_env_vars()
@@ -139,12 +188,18 @@ impl ContainerManager {
             .map(|(k, v)| format!("{}={}", k, v))
             .collect();
 
+        // Use the configured user (doodoori by default)
+        // Note: We don't use host UID because it causes authentication issues
+        // with Claude credentials stored in the Docker volume.
+        // Files created in the workspace will be owned by the container user.
+        let user = config.user.clone();
+
         // Create container config
         let container_config = Config {
             image: Some(config.image.clone()),
             env: Some(env),
             working_dir: Some(config.working_dir.to_string_lossy().to_string()),
-            user: config.user.clone(),
+            user,
             host_config: Some(bollard::models::HostConfig {
                 binds: Some(binds),
                 network_mode: Some(config.network.as_str().to_string()),
@@ -246,6 +301,8 @@ impl ContainerManager {
         cmd: Vec<&str>,
         env: Option<HashMap<String, String>>,
     ) -> Result<ExecOutput> {
+        tracing::debug!("exec_command: cmd={:?}", cmd);
+
         let env_vec: Option<Vec<String>> = env.map(|e| {
             e.iter().map(|(k, v)| format!("{}={}", k, v)).collect()
         });
@@ -253,18 +310,22 @@ impl ContainerManager {
         let exec_config = CreateExecOptions {
             attach_stdout: Some(true),
             attach_stderr: Some(true),
+            attach_stdin: Some(false),
+            tty: Some(false), // Don't use TTY - it interferes with JSON output
             cmd: Some(cmd.iter().map(|s| s.to_string()).collect()),
             env: env_vec,
             working_dir: Some("/workspace".to_string()),
             ..Default::default()
         };
 
+        tracing::debug!("exec_command: creating exec...");
         let exec = self
             .docker
             .create_exec(container_id, exec_config)
             .await
             .context("Failed to create exec")?;
 
+        tracing::debug!("exec_command: starting exec id={}...", exec.id);
         let output = self
             .docker
             .start_exec(&exec.id, None)
@@ -274,23 +335,38 @@ impl ContainerManager {
         let mut stdout = String::new();
         let mut stderr = String::new();
 
+        tracing::debug!("exec_command: collecting output...");
         if let StartExecResults::Attached { mut output, .. } = output {
+            let mut msg_count = 0;
             while let Some(msg) = output.next().await {
+                msg_count += 1;
                 match msg {
                     Ok(LogOutput::StdOut { message }) => {
-                        stdout.push_str(&String::from_utf8_lossy(&message));
+                        let text = String::from_utf8_lossy(&message);
+                        tracing::trace!("exec stdout[{}]: {}", msg_count, text.chars().take(100).collect::<String>());
+                        stdout.push_str(&text);
                     }
                     Ok(LogOutput::StdErr { message }) => {
-                        stderr.push_str(&String::from_utf8_lossy(&message));
+                        let text = String::from_utf8_lossy(&message);
+                        tracing::trace!("exec stderr[{}]: {}", msg_count, text.chars().take(100).collect::<String>());
+                        stderr.push_str(&text);
                     }
-                    _ => {}
+                    Ok(other) => {
+                        tracing::trace!("exec other[{}]: {:?}", msg_count, other);
+                    }
+                    Err(e) => {
+                        tracing::warn!("exec error[{}]: {}", msg_count, e);
+                    }
                 }
             }
+            tracing::debug!("exec_command: collected {} messages", msg_count);
         }
 
         // Get exit code
+        tracing::debug!("exec_command: getting exit code...");
         let inspect = self.docker.inspect_exec(&exec.id).await?;
         let exit_code = inspect.exit_code.unwrap_or(-1);
+        tracing::debug!("exec_command: exit_code={}", exit_code);
 
         Ok(ExecOutput {
             stdout,

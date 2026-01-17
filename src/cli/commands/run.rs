@@ -127,11 +127,11 @@ impl RunArgs {
         let workspace = std::env::current_dir()?;
 
         // Build sandbox configuration
+        // By default, uses Docker volume for Claude credentials (recommended)
         let config = SandboxConfig::builder()
             .image(&self.image)
             .network(network)
             .workspace(&workspace)
-            .mount_claude_config(true)
             .build();
 
         // Create and initialize runner
@@ -144,6 +144,32 @@ impl RunArgs {
         println!("   Network: {}", self.network);
         println!("   Workspace: {}", workspace.display());
 
+        // First, check if Claude is authenticated in the sandbox
+        println!("\n🔍 Checking Claude authentication in sandbox...");
+        let auth_check = runner.exec(vec!["claude", "--version"]).await?;
+        println!("   Claude version check: exit_code={}", auth_check.exit_code);
+        if !auth_check.stdout.is_empty() {
+            println!("   stdout: {}", auth_check.stdout.trim());
+        }
+        if !auth_check.stderr.is_empty() {
+            println!("   stderr: {}", auth_check.stderr.trim());
+        }
+
+        // Check if credentials exist
+        let cred_check = runner.exec(vec!["ls", "-la", "/home/doodoori/.claude/"]).await;
+        match cred_check {
+            Ok(output) => {
+                println!("   Credentials directory:");
+                for line in output.stdout.lines().take(5) {
+                    println!("     {}", line);
+                }
+            }
+            Err(e) => {
+                println!("   ⚠️  No credentials found: {}", e);
+                println!("   Run 'doodoori sandbox login' first to authenticate.");
+            }
+        }
+
         // Build Claude options
         let options = ClaudeOptions::new()
             .model(self.model.to_string());
@@ -153,6 +179,9 @@ impl RunArgs {
         } else {
             options
         };
+
+        println!("\n⏳ Executing Claude command (this may take a while)...");
+        println!("   Command: claude -p \"{}\" --output-format stream-json --verbose", prompt);
 
         // Execute Claude
         let result = runner.run_claude(prompt, &options).await?;

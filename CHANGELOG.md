@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2025-01-17
+
+### Added
+
+- **Sandbox Authentication**: Docker volume-based credential storage
+  - `doodoori sandbox login` command for interactive authentication
+  - `doodoori sandbox status` command to check sandbox state
+  - `doodoori sandbox cleanup` command to remove volumes/containers
+  - Docker volume `doodoori-claude-credentials` for secure credential storage
+  - Support for subscription-based authentication (macOS Keychain workaround)
+
+### Changed
+
+- Sandbox now uses Docker volumes instead of host mount for Claude credentials
+- Added `--verbose` flag to Claude CLI calls (required for stream-json output)
+- Updated docker-compose.yml to use named volume for credentials
+- Default sandbox config now uses Docker volume (recommended for subscription auth)
+
+### Fixed
+
+- Fixed authentication failure in Docker sandbox for subscription users
+- Fixed read-only filesystem error with ~/.claude mount
+- Fixed Claude CLI stream-json output format requirements
+
+### Tests
+
+- 103 unit tests (6 new tests for sandbox CLI commands)
+
 ## [0.4.0] - 2025-01-17
 
 ### Added
