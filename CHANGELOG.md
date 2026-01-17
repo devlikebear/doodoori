@@ -26,13 +26,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `--model`, `--max-iterations`, `--budget`: Task execution settings
   - `--yolo`, `--readonly`: Permission settings
 
+- **Output Formatters**: Structured output support for CLI commands
+  - `--format` / `-f`: Output format (text, json, json-pretty, yaml, markdown)
+  - `--output` / `-o`: Output file path (default: stdout)
+  - Supported in `run`, `parallel`, `workflow`, and `cost` commands
+  - JSON and YAML for machine-readable output (pipelines, scripts)
+  - Markdown for reports and documentation
+  - Default format: text (human-readable)
+
 ### Changed
 
 - Added `notify` and `notify-debouncer-mini` dependencies for file watching
+- Added `src/output/mod.rs` module with formatters and structured output types
 
 ### Tests
 
-- 221 unit tests (4 new tests for watch module)
+- 229 unit tests (8 new tests for output module)
 
 ## [0.11.0] - 2026-01-17
 

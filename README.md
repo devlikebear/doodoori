@@ -26,6 +26,7 @@ Named after **Doodoori (두두리, 豆豆里)**, the Silla dynasty's blacksmith 
 - **Hooks System**: Execute custom scripts at execution points (pre_run, post_run, on_error, etc.)
 - **Notifications**: Send notifications to Slack, Discord, or webhooks on task events
 - **Watch Mode**: Monitor file changes and automatically run tasks
+- **Output Formatters**: Structured output in JSON, YAML, Markdown for pipelines and scripts
 
 ## Installation
 
@@ -461,6 +462,49 @@ doodoori watch -i "*.tmp" -i "build/**" "Build project" -p "**/*"
 - `node_modules/**`
 - `*.log`
 
+## Output Formatters
+
+Output structured data in various formats for integration with other tools:
+
+```bash
+# JSON output (compact)
+doodoori run "Build project" --format json
+
+# Pretty JSON output
+doodoori run "Build project" --format json-pretty
+
+# YAML output
+doodoori run "Build project" --format yaml
+
+# Markdown output (for reports)
+doodoori run "Build project" --format markdown
+
+# Output to file
+doodoori run "Build project" --format json --output result.json
+
+# Parallel execution with structured output
+doodoori parallel --task "A" --task "B" --format yaml
+
+# Workflow output
+doodoori workflow run workflow.yaml --format json-pretty
+
+# Cost summary as YAML
+doodoori cost --format yaml
+```
+
+**Supported formats:**
+- `text` (default): Human-readable text output
+- `json`: Compact JSON for parsing
+- `json-pretty`: Formatted JSON for readability
+- `yaml`: YAML format for configuration files
+- `markdown`: Markdown for documentation and reports
+
+**Supported commands:**
+- `doodoori run`
+- `doodoori parallel`
+- `doodoori workflow run`
+- `doodoori cost`
+
 ## Configuration
 
 Create a `doodoori.toml` in your project root:
@@ -608,6 +652,7 @@ doodoori spec --validate api-spec.md
 - [x] Phase 9: Hooks system (pre_run, post_run, on_error, on_iteration, on_complete)
 - [x] Phase 10: Notifications (Slack, Discord, Webhook)
 - [x] Phase 11: Watch Mode (file monitoring, auto-run)
+- [x] Phase 12: Output Formatters (JSON, YAML, Markdown output)
 
 ## License
 
