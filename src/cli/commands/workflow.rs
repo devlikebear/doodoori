@@ -3,6 +3,7 @@ use clap::{Args, Subcommand};
 use std::path::PathBuf;
 
 use crate::executor::{ParallelConfig, ParallelExecutor, TaskDefinition};
+use crate::output::{OutputFormat, OutputWriter, StepOutput, WorkflowOutput};
 use crate::pricing::format_cost;
 use crate::workflow::{
     DagScheduler, StepStatus, WorkflowDefinition, WorkflowState, WorkflowStateManager, WorkflowStatus,
@@ -52,6 +53,14 @@ pub struct WorkflowRunArgs {
     /// Run in sandbox mode (Docker)
     #[arg(long)]
     pub sandbox: bool,
+
+    /// Output format (text, json, json-pretty, yaml, markdown)
+    #[arg(long, short = 'f', default_value = "text")]
+    pub format: String,
+
+    /// Output file path (default: stdout)
+    #[arg(long, short = 'o')]
+    pub output: Option<String>,
 }
 
 /// Arguments for resuming a workflow
@@ -261,12 +270,44 @@ impl WorkflowRunArgs {
         }
         state_manager.save(&state)?;
 
-        println!("=== Workflow {} ===", if state.status == WorkflowStatus::Completed { "Completed" } else { "Failed" });
-        println!("Total cost: {}", format_cost(state.total_cost_usd));
-        println!("Workflow ID: {}", state.short_id());
+        // Parse output format
+        let output_format: OutputFormat = self.format.parse().unwrap_or_default();
 
-        if state.status == WorkflowStatus::Failed {
-            println!("\nTo resume: doodoori workflow resume {}", state.short_id());
+        if output_format == OutputFormat::Text {
+            println!("=== Workflow {} ===", if state.status == WorkflowStatus::Completed { "Completed" } else { "Failed" });
+            println!("Total cost: {}", format_cost(state.total_cost_usd));
+            println!("Workflow ID: {}", state.short_id());
+
+            if state.status == WorkflowStatus::Failed {
+                println!("\nTo resume: doodoori workflow resume {}", state.short_id());
+            }
+        } else {
+            // Build structured output
+            let mut output = WorkflowOutput::new(workflow.name.clone(), workflow_id.clone())
+                .with_status(format!("{:?}", state.status));
+
+            for (name, step_state) in &state.steps {
+                let mut step_output = StepOutput::new(name.clone())
+                    .with_status(format!("{:?}", step_state.status).to_lowercase())
+                    .with_cost(step_state.cost_usd);
+
+                if let Some(ref error) = step_state.error {
+                    step_output = step_output.with_error(error);
+                }
+
+                output.add_step(step_output);
+            }
+
+            // Write output
+            let writer = if let Some(ref path) = self.output {
+                OutputWriter::new(output_format).with_file(path)
+            } else {
+                OutputWriter::new(output_format)
+            };
+
+            if let Err(e) = writer.write_workflow(&output) {
+                tracing::error!("Failed to write output: {}", e);
+            }
         }
 
         Ok(())
