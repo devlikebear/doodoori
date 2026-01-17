@@ -4,7 +4,7 @@
 
 Named after **Doodoori (두두리, 豆豆里)**, the Silla dynasty's blacksmith deity - just as the ancient craftsman forged metal into tools, Doodoori forges code through persistent iteration until completion.
 
-## Features (Phase 1 MVP)
+## Features
 
 - **Self-Improvement Loop**: Runs Claude Code repeatedly until task completion using the Loop Engine
 - **Model Selection**: Support for haiku, sonnet, and opus model aliases
@@ -12,6 +12,7 @@ Named after **Doodoori (두두리, 豆豆里)**, the Silla dynasty's blacksmith 
 - **Configurable**: Project-level configuration via `doodoori.toml`
 - **Dry Run Mode**: Preview what would be executed without running
 - **Permission Control**: YOLO mode, read-only mode, and custom allowed tools
+- **Spec File System**: Markdown-based task specifications with validation
 
 ## Installation
 
@@ -76,6 +77,8 @@ workers = 3
 | `doodoori run --spec <file.md>` | Run from a spec file |
 | `doodoori run --dry-run <prompt>` | Preview execution plan |
 | `doodoori spec <description>` | Generate a spec file |
+| `doodoori spec --validate <file.md>` | Validate a spec file |
+| `doodoori spec --info <file.md>` | Show parsed spec information |
 | `doodoori cost` | View cost tracking |
 | `doodoori config` | Show configuration |
 | `doodoori price` | Show model pricing |
@@ -88,10 +91,49 @@ workers = 3
 | Sonnet | $3.00 | $15.00 | Balanced performance, general use |
 | Opus | $5.00 | $25.00 | Complex reasoning, high-quality output |
 
+## Spec Files
+
+Spec files are markdown documents that define tasks for Doodoori:
+
+```markdown
+# Task: Build REST API
+
+## Objective
+Create a REST API for todo management
+
+## Model
+sonnet
+
+## Requirements
+- [ ] GET /todos endpoint
+- [ ] POST /todos endpoint
+- [ ] DELETE /todos endpoint
+
+## Constraints
+- Use Rust and Axum framework
+- Include error handling
+
+## Completion Criteria
+All endpoints working with tests
+
+## Max Iterations
+30
+```
+
+Generate a spec file:
+```bash
+doodoori spec "Build a REST API for todos" -o api-spec.md
+```
+
+Validate a spec file:
+```bash
+doodoori spec --validate api-spec.md
+```
+
 ## Roadmap
 
 - [x] Phase 1: MVP - Basic execution with Loop Engine
-- [ ] Phase 2: Spec file system with markdown parsing
+- [x] Phase 2: Spec file system with markdown parsing
 - [ ] Phase 3: Sandbox mode with Docker
 - [ ] Phase 4: State management and resume
 - [ ] Phase 5: Parallel execution
