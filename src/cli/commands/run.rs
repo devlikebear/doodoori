@@ -12,7 +12,7 @@ use crate::output::{OutputFormat, OutputWriter, TaskOutput};
 #[derive(Args, Debug)]
 pub struct RunArgs {
     /// The task prompt or description
-    #[arg(required_unless_present = "spec")]
+    #[arg(required_unless_present_any = ["spec", "template"])]
     pub prompt: Option<String>,
 
     /// Path to spec file (markdown)
@@ -100,16 +100,60 @@ pub struct RunArgs {
     /// Output file path (default: stdout)
     #[arg(long, short = 'o')]
     pub output: Option<String>,
+
+    /// Use a template instead of direct prompt
+    #[arg(long, short = 't')]
+    pub template: Option<String>,
+
+    /// Template variables (key=value format)
+    #[arg(long = "var")]
+    pub template_vars: Vec<String>,
 }
 
 impl RunArgs {
+    /// Parse template variables from the --var flags
+    /// Returns a HashMap of variable name to value
+    fn parse_template_vars(&self) -> Result<std::collections::HashMap<String, String>> {
+        let mut vars = std::collections::HashMap::new();
+        for var_str in &self.template_vars {
+            let parts: Vec<&str> = var_str.splitn(2, '=').collect();
+            if parts.len() != 2 {
+                anyhow::bail!("Invalid variable format: {}. Expected key=value", var_str);
+            }
+            vars.insert(parts[0].to_string(), parts[1].to_string());
+        }
+        Ok(vars)
+    }
+
     pub async fn execute(self) -> Result<()> {
         if self.dry_run {
             return self.execute_dry_run().await;
         }
 
-        // Load prompt from spec file or use direct prompt
-        let (prompt, spec_model, spec_max_iterations) = if let Some(spec_path) = &self.spec {
+        // Load prompt from template, spec file, or use direct prompt
+        let (prompt, spec_model, spec_max_iterations) = if let Some(template_name) = &self.template {
+            // Load template
+            use crate::templates::storage::TemplateStorage;
+
+            tracing::info!("Loading template: {}", template_name);
+            let storage = TemplateStorage::new()?;
+            let template = storage.get(template_name)
+                .ok_or_else(|| anyhow::anyhow!("Template not found: {}", template_name))?;
+
+            // Parse variables
+            let vars = self.parse_template_vars()?;
+
+            // Validate and render template
+            template.validate_variables(&vars)?;
+            let mut rendered = template.render(&vars)?;
+
+            // Append additional prompt if provided
+            if let Some(ref additional) = self.prompt {
+                rendered = format!("{}\n\nAdditional instructions:\n{}", rendered, additional);
+            }
+
+            (rendered, template.default_model, template.default_max_iterations)
+        } else if let Some(spec_path) = &self.spec {
             tracing::info!("Loading spec file: {}", spec_path);
             let spec = SpecParser::parse_file(std::path::Path::new(spec_path))?;
             let prompt = spec.to_prompt();
@@ -120,14 +164,19 @@ impl RunArgs {
             (self.prompt.clone().unwrap(), None, None)
         };
 
-        // Use spec values as defaults, CLI overrides take precedence
-        // If CLI model is default (sonnet) and spec has a model, use spec's model
+        // Use spec/template values as defaults, CLI overrides take precedence
+        // If CLI model is default (sonnet) and spec/template has a model, use spec/template's model
         let model = if self.model == ModelAlias::Sonnet && spec_model.is_some() {
             spec_model.unwrap()
         } else {
             self.model.clone()
         };
-        let max_iterations = spec_max_iterations.unwrap_or(self.max_iterations);
+        // If CLI max_iterations is default (50) and spec/template has max_iterations, use spec/template's value
+        let max_iterations = if self.max_iterations == 50 && spec_max_iterations.is_some() {
+            spec_max_iterations.unwrap()
+        } else {
+            self.max_iterations
+        };
 
         tracing::info!("Running task with model: {:?}", model);
         tracing::info!("Prompt: {}", prompt);
@@ -583,15 +632,68 @@ impl RunArgs {
     async fn execute_dry_run(&self) -> Result<()> {
         println!("=== Dry Run Preview ===\n");
 
-        println!("[Prompt]");
-        if let Some(spec) = &self.spec {
+        // Handle template, spec, or direct prompt
+        let (prompt, template_model, template_max_iter, is_template) = if let Some(template_name) = &self.template {
+            use crate::templates::storage::TemplateStorage;
+
+            let storage = TemplateStorage::new()?;
+            let template = storage.get(template_name)
+                .ok_or_else(|| anyhow::anyhow!("Template not found: {}", template_name))?;
+
+            let vars = self.parse_template_vars()?;
+            template.validate_variables(&vars)?;
+            let mut rendered = template.render(&vars)?;
+
+            if let Some(ref additional) = self.prompt {
+                rendered = format!("{}\n\nAdditional instructions:\n{}", rendered, additional);
+            }
+
+            println!("=== Template: {} ===", template_name);
+            println!("Category: {:?}", template.category);
+            if let Some(ref model) = template.default_model {
+                println!("Default Model: {:?}", model);
+            }
+            if let Some(max_iter) = template.default_max_iterations {
+                println!("Default Max Iterations: {}", max_iter);
+            }
+            println!();
+
+            (rendered, template.default_model, template.default_max_iterations, true)
+        } else if let Some(spec) = &self.spec {
+            println!("[Prompt Source]");
             println!("  Spec file: {}", spec);
+            let spec = SpecParser::parse_file(std::path::Path::new(spec))?;
+            let prompt = spec.to_prompt();
+            (prompt, Some(spec.effective_model()), spec.max_iterations, false)
         } else if let Some(prompt) = &self.prompt {
+            println!("[Prompt Source]");
+            println!("  Direct prompt");
+            (prompt.clone(), None, None, false)
+        } else {
+            anyhow::bail!("Either --prompt, --spec, or --template is required");
+        };
+
+        if is_template {
+            println!("=== Rendered Prompt ===");
+        } else {
+            println!("\n[Prompt]");
+        }
+
+        // Truncate long prompts for display
+        if prompt.len() > 500 {
+            println!("  \"{}...\"", &prompt[..497]);
+            println!("  (truncated, {} total characters)", prompt.len());
+        } else {
             println!("  \"{}\"", prompt);
         }
 
         println!("\n[Model]");
-        println!("  {:?}", self.model);
+        let display_model = if self.model == ModelAlias::Sonnet && template_model.is_some() {
+            template_model.as_ref().unwrap()
+        } else {
+            &self.model
+        };
+        println!("  {:?}", display_model);
 
         println!("\n[Estimated Cost]");
         println!("  (Cost estimation not yet implemented)");
@@ -619,7 +721,12 @@ impl RunArgs {
         }
 
         println!("\n[Loop Engine]");
-        println!("  Max iterations: {}", self.max_iterations);
+        let display_max_iter = if self.max_iterations == 50 && template_max_iter.is_some() {
+            template_max_iter.unwrap()
+        } else {
+            self.max_iterations
+        };
+        println!("  Max iterations: {}", display_max_iter);
         println!("  Completion promise: \"COMPLETE\"");
 
         if let Some(budget) = self.budget {
@@ -705,5 +812,232 @@ impl RunArgs {
         println!("\n=== End Preview ===");
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_parse_template_vars_valid() {
+        let args = RunArgs {
+            prompt: None,
+            spec: None,
+            model: ModelAlias::Sonnet,
+            budget: None,
+            max_iterations: 50,
+            sandbox: false,
+            image: "doodoori/sandbox:latest".to_string(),
+            network: "bridge".to_string(),
+            dry_run: false,
+            yolo: false,
+            readonly: false,
+            allow: None,
+            instructions: None,
+            no_instructions: false,
+            no_git: false,
+            no_auto_merge: false,
+            verbose: false,
+            no_hooks: false,
+            notify: None,
+            no_notify: false,
+            format: "text".to_string(),
+            output: None,
+            template: None,
+            template_vars: vec![
+                "resource=users".to_string(),
+                "path=/api/v1".to_string(),
+            ],
+        };
+
+        let vars = args.parse_template_vars().unwrap();
+        assert_eq!(vars.get("resource"), Some(&"users".to_string()));
+        assert_eq!(vars.get("path"), Some(&"/api/v1".to_string()));
+    }
+
+    #[test]
+    fn test_parse_template_vars_with_equals_in_value() {
+        let args = RunArgs {
+            prompt: None,
+            spec: None,
+            model: ModelAlias::Sonnet,
+            budget: None,
+            max_iterations: 50,
+            sandbox: false,
+            image: "doodoori/sandbox:latest".to_string(),
+            network: "bridge".to_string(),
+            dry_run: false,
+            yolo: false,
+            readonly: false,
+            allow: None,
+            instructions: None,
+            no_instructions: false,
+            no_git: false,
+            no_auto_merge: false,
+            verbose: false,
+            no_hooks: false,
+            notify: None,
+            no_notify: false,
+            format: "text".to_string(),
+            output: None,
+            template: None,
+            template_vars: vec!["url=https://example.com/path?foo=bar".to_string()],
+        };
+
+        let vars = args.parse_template_vars().unwrap();
+        assert_eq!(
+            vars.get("url"),
+            Some(&"https://example.com/path?foo=bar".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_template_vars_invalid_format() {
+        let args = RunArgs {
+            prompt: None,
+            spec: None,
+            model: ModelAlias::Sonnet,
+            budget: None,
+            max_iterations: 50,
+            sandbox: false,
+            image: "doodoori/sandbox:latest".to_string(),
+            network: "bridge".to_string(),
+            dry_run: false,
+            yolo: false,
+            readonly: false,
+            allow: None,
+            instructions: None,
+            no_instructions: false,
+            no_git: false,
+            no_auto_merge: false,
+            verbose: false,
+            no_hooks: false,
+            notify: None,
+            no_notify: false,
+            format: "text".to_string(),
+            output: None,
+            template: None,
+            template_vars: vec!["invalid_format".to_string()],
+        };
+
+        let result = args.parse_template_vars();
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid variable format"));
+    }
+
+    #[test]
+    fn test_parse_template_vars_empty() {
+        let args = RunArgs {
+            prompt: None,
+            spec: None,
+            model: ModelAlias::Sonnet,
+            budget: None,
+            max_iterations: 50,
+            sandbox: false,
+            image: "doodoori/sandbox:latest".to_string(),
+            network: "bridge".to_string(),
+            dry_run: false,
+            yolo: false,
+            readonly: false,
+            allow: None,
+            instructions: None,
+            no_instructions: false,
+            no_git: false,
+            no_auto_merge: false,
+            verbose: false,
+            no_hooks: false,
+            notify: None,
+            no_notify: false,
+            format: "text".to_string(),
+            output: None,
+            template: None,
+            template_vars: vec![],
+        };
+
+        let vars = args.parse_template_vars().unwrap();
+        assert!(vars.is_empty());
+    }
+
+    #[test]
+    fn test_template_required_variable_validation() {
+        use crate::templates::{Template, TemplateCategory, TemplateVariable};
+
+        let template = Template {
+            name: "test-template".to_string(),
+            description: "Test".to_string(),
+            category: TemplateCategory::Test,
+            prompt: "Do something with {{resource}}".to_string(),
+            variables: vec![TemplateVariable {
+                name: "resource".to_string(),
+                description: "Name of the resource".to_string(),
+                default: None,
+                required: true,
+            }],
+            default_model: None,
+            default_max_iterations: None,
+            tags: vec![],
+        };
+
+        let vars = HashMap::new();
+        let result = template.validate_variables(&vars);
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("Missing required variable: resource"));
+    }
+
+    #[test]
+    fn test_template_default_model_override() {
+        // Test that CLI model overrides template default when not using default
+        let default_cli_model = ModelAlias::Sonnet;
+
+        // When CLI has non-default model, it should be used
+        let template_model = Some(ModelAlias::Opus);
+        let cli_model = ModelAlias::Haiku;
+        let effective_model = if cli_model == default_cli_model && template_model.is_some() {
+            template_model.unwrap()
+        } else {
+            cli_model.clone()
+        };
+        assert_eq!(effective_model, ModelAlias::Haiku);
+
+        // When CLI has default model and template has a model, use template's
+        let template_model = Some(ModelAlias::Opus);
+        let cli_model = ModelAlias::Sonnet;
+        let effective_model = if cli_model == default_cli_model && template_model.is_some() {
+            template_model.unwrap()
+        } else {
+            cli_model.clone()
+        };
+        assert_eq!(effective_model, ModelAlias::Opus);
+    }
+
+    #[test]
+    fn test_template_default_max_iterations_override() {
+        // Test that CLI max_iterations overrides template default when not using default
+        let template_max_iter = Some(10u32);
+        let cli_max_iter = 100u32;
+        let default_cli_max_iter = 50u32;
+
+        // When CLI has non-default value, it should be used
+        let effective_max_iter = if cli_max_iter == default_cli_max_iter && template_max_iter.is_some() {
+            template_max_iter.unwrap()
+        } else {
+            cli_max_iter
+        };
+        assert_eq!(effective_max_iter, 100);
+
+        // When CLI has default value and template has a value, use template's
+        let cli_max_iter = 50u32;
+        let effective_max_iter = if cli_max_iter == default_cli_max_iter && template_max_iter.is_some() {
+            template_max_iter.unwrap()
+        } else {
+            cli_max_iter
+        };
+        assert_eq!(effective_max_iter, 10);
     }
 }
