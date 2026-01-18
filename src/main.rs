@@ -16,6 +16,7 @@ mod pricing;
 mod sandbox;
 mod secrets;
 mod state;
+mod templates;
 mod utils;
 mod watch;
 mod workflow;
