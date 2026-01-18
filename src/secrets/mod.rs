@@ -1,8 +1,6 @@
 //! Secrets management module for environment variables and keychain integration
-#![allow(dead_code)]
 
 mod env_loader;
-mod masking;
 
 #[cfg(feature = "keychain")]
 mod keychain;
