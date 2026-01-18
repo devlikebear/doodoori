@@ -1,4 +1,5 @@
 //! Git branch management
+#![allow(dead_code)]
 
 use super::repo::GitRepository;
 use super::{sanitize_branch_name, GitError, Result};

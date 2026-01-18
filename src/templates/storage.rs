@@ -16,6 +16,7 @@ pub struct TemplateStorage {
     project_dir: Option<PathBuf>,
 }
 
+#[allow(dead_code)]
 impl TemplateStorage {
     /// Create a new template storage
     pub fn new() -> Result<Self> {

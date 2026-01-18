@@ -2,6 +2,7 @@
 //!
 //! Provides worktree operations for isolating parallel tasks into
 //! separate working directories with their own branches.
+#![allow(dead_code)]
 
 use super::branch::BranchManager;
 use super::repo::GitRepository;

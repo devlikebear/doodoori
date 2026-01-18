@@ -1,6 +1,7 @@
 //! Pull Request management using gh CLI
 //!
 //! Provides PR operations via GitHub CLI (gh).
+#![allow(dead_code)]
 
 use super::{GitError, Result};
 use serde::{Deserialize, Serialize};

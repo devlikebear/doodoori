@@ -4,6 +4,7 @@
 //! - Slack (via webhook)
 //! - Discord (via webhook)
 //! - Generic HTTP webhooks
+#![allow(dead_code)]
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};

@@ -1,4 +1,5 @@
 //! Git repository management
+#![allow(dead_code)]
 
 use super::{GitError, Result};
 use git2::{Repository, StatusOptions};

@@ -76,6 +76,7 @@ default = []
 sandbox = ["bollard", "futures-util"]
 dashboard = ["ratatui", "crossterm"]
 keychain = ["dep:keyring"]
+price-update = []
 full = ["sandbox", "dashboard", "keychain"]
 
 [lib]
