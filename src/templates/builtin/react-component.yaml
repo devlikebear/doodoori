@@ -1,0 +1,22 @@
+name: react-component
+description: Create a React component with TypeScript
+category: scaffold
+tags: [react, typescript, frontend]
+default_model: sonnet
+variables:
+  - name: name
+    description: Component name (PascalCase)
+    required: true
+  - name: type
+    description: Component type
+    default: functional
+    required: false
+prompt: |
+  Create a React {type} component named "{name}".
+
+  Requirements:
+  - Use TypeScript with proper type definitions
+  - Include props interface
+  - Add JSDoc comments
+  - Follow existing component patterns in the codebase
+  - Include basic styling setup

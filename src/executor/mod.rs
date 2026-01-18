@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, Mutex, Semaphore};
 use uuid::Uuid;
 
 use crate::claude::ModelAlias;
-use crate::loop_engine::{LoopConfig, LoopEngine, LoopResult, LoopStatus};
+use crate::loop_engine::{LoopConfig, LoopEngine, LoopStatus};
 
 /// Definition of a task to be executed in parallel
 #[derive(Debug, Clone)]

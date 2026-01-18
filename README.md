@@ -27,6 +27,7 @@ Named after **Doodoori (두두리, 豆豆里)**, the Silla dynasty's blacksmith 
 - **Notifications**: Send notifications to Slack, Discord, or webhooks on task events
 - **Watch Mode**: Monitor file changes and automatically run tasks
 - **Output Formatters**: Structured output in JSON, YAML, Markdown for pipelines and scripts
+- **Template System**: Pre-built and custom task templates for common scenarios
 
 ## Installation
 
@@ -505,6 +506,79 @@ doodoori cost --format yaml
 - `doodoori workflow run`
 - `doodoori cost`
 
+## Templates
+
+Use pre-built or custom templates for common development tasks:
+
+```bash
+# List available templates
+doodoori template list
+
+# Filter by category
+doodoori template list --category scaffold
+
+# Filter by tag
+doodoori template list --tag rust
+
+# Show template details
+doodoori template show api-endpoint
+
+# Use a template with variables
+doodoori template use add-tests --var file=src/main.rs
+
+# Run with a template
+doodoori run --template api-endpoint --var resource=users
+
+# Run with template (short form)
+doodoori run -t add-tests --var file=src/utils.rs
+
+# Dry-run to preview rendered prompt
+doodoori run -t fix-bug --var description="Login fails" --dry-run
+
+# Override template defaults
+doodoori run -t api-endpoint --var resource=posts --model opus --budget 5.0
+```
+
+**Built-in templates:**
+
+| Template | Category | Description |
+|----------|----------|-------------|
+| api-endpoint | scaffold | Create a REST API endpoint with CRUD operations |
+| react-component | scaffold | Create a React component with TypeScript |
+| cli-command | scaffold | Create a new CLI subcommand |
+| extract-function | refactor | Extract code into a separate function |
+| clean-imports | refactor | Clean up and organize imports |
+| add-tests | test | Add unit tests for a file or module |
+| integration-test | test | Add integration tests |
+| fix-bug | fix | Fix a bug in the codebase |
+| add-docs | docs | Add documentation to code |
+
+**Custom templates:**
+
+Create your own templates in `~/.doodoori/templates/` (user) or `.doodoori/templates/` (project):
+
+```yaml
+# ~/.doodoori/templates/my-template.yaml
+name: my-template
+description: My custom template
+category: custom
+tags: [custom, example]
+default_model: sonnet
+variables:
+  - name: target
+    description: Target file or module
+    required: true
+  - name: style
+    description: Coding style
+    default: "clean code"
+prompt: |
+  Apply {style} principles to {target}.
+
+  Requirements:
+  - Follow existing patterns
+  - Add appropriate tests
+```
+
 ## Configuration
 
 Create a `doodoori.toml` in your project root:
@@ -594,11 +668,17 @@ events = ["completed", "error"]
 
 ## Model Pricing
 
+> **Reference**: https://platform.claude.com/docs/ko/about-claude/models/overview
+
+Doodoori uses Claude Code CLI aliases (`haiku`, `sonnet`, `opus`) which automatically resolve to the best available model.
+
 | Model | Input/MTok | Output/MTok | Best For |
 |-------|------------|-------------|----------|
-| Haiku | $1.00 | $5.00 | Quick tasks, simple operations |
-| Sonnet | $3.00 | $15.00 | Balanced performance, general use |
-| Opus | $5.00 | $25.00 | Complex reasoning, high-quality output |
+| Haiku 4.5 | $1.00 | $5.00 | Quick tasks, simple operations |
+| Sonnet 4.5 | $3.00 | $15.00 | Balanced performance, general use |
+| Opus 4.5 | $5.00 | $25.00 | Complex reasoning, high-quality output |
+
+Pricing data is stored in `price.toml` and can be updated from the official documentation.
 
 ## Spec Files
 
@@ -653,6 +733,7 @@ doodoori spec --validate api-spec.md
 - [x] Phase 10: Notifications (Slack, Discord, Webhook)
 - [x] Phase 11: Watch Mode (file monitoring, auto-run)
 - [x] Phase 12: Output Formatters (JSON, YAML, Markdown output)
+- [x] Phase 13: Template System (pre-built and custom task templates)
 
 ## License
 

@@ -6,8 +6,9 @@
 //! - `on_error`: When an error occurs
 //! - `on_iteration`: After each loop iteration
 //! - `on_complete`: When task completes successfully
+#![allow(dead_code)]
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

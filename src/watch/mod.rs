@@ -265,8 +265,8 @@ impl WatchRunner {
 
     /// Run the watch loop
     pub async fn run(&self) -> Result<()> {
-        use crate::claude::ModelAlias;
-        use crate::loop_engine::{LoopConfig, LoopEngine, LoopEvent};
+        
+        
         use console::{style, Emoji};
 
         let watcher = FileWatcher::new(self.config.clone());
@@ -387,7 +387,7 @@ impl WatchRunner {
     async fn execute_task(&self) -> Result<()> {
         use crate::claude::ModelAlias;
         use crate::loop_engine::{LoopConfig, LoopEngine, LoopEvent};
-        use console::{style, Emoji};
+        use console::Emoji;
         use indicatif::{ProgressBar, ProgressStyle};
 
         // Get prompt from spec file or use direct prompt

@@ -13,12 +13,13 @@ pub enum ModelAlias {
 }
 
 impl ModelAlias {
-    /// Convert alias to full model ID
+    /// Convert alias to full model ID (for pricing calculation)
+    /// Reference: https://platform.claude.com/docs/ko/about-claude/models/overview
     #[allow(dead_code)]
     pub fn to_model_id(&self) -> &'static str {
         match self {
-            ModelAlias::Haiku => "claude-haiku-4-5-20251101",
-            ModelAlias::Sonnet => "claude-sonnet-4-5-20251101",
+            ModelAlias::Haiku => "claude-haiku-4-5-20251001",
+            ModelAlias::Sonnet => "claude-sonnet-4-5-20250929",
             ModelAlias::Opus => "claude-opus-4-5-20251101",
         }
     }
@@ -77,8 +78,9 @@ mod tests {
 
     #[test]
     fn test_model_to_id() {
-        assert_eq!(ModelAlias::Haiku.to_model_id(), "claude-haiku-4-5-20251101");
-        assert_eq!(ModelAlias::Sonnet.to_model_id(), "claude-sonnet-4-5-20251101");
+        // Reference: https://platform.claude.com/docs/ko/about-claude/models/overview
+        assert_eq!(ModelAlias::Haiku.to_model_id(), "claude-haiku-4-5-20251001");
+        assert_eq!(ModelAlias::Sonnet.to_model_id(), "claude-sonnet-4-5-20250929");
         assert_eq!(ModelAlias::Opus.to_model_id(), "claude-opus-4-5-20251101");
     }
 }

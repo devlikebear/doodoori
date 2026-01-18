@@ -1,4 +1,5 @@
 //! Secret masking for logs and output
+#![allow(dead_code)]
 
 use regex::Regex;
 use std::borrow::Cow;

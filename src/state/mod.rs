@@ -1,4 +1,5 @@
 //! State management module for task persistence and resume functionality
+#![allow(dead_code)]
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};

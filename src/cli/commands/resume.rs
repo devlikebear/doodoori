@@ -2,7 +2,6 @@
 
 use anyhow::{Context, Result};
 use clap::Args;
-use std::path::PathBuf;
 
 use crate::claude::ModelAlias;
 use crate::loop_engine::{LoopConfig, LoopEngine, LoopEvent, LoopStatus};
@@ -173,7 +172,7 @@ impl ResumeArgs {
     }
 
     async fn resume_task(&self, state_manager: &StateManager, task_id: &str) -> Result<()> {
-        use console::{style, Emoji};
+        use console::Emoji;
         use indicatif::{ProgressBar, ProgressStyle};
 
         // Find the task

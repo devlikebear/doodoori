@@ -383,7 +383,7 @@ impl CostOutput {
         self
     }
 
-    pub fn with_tokens(mut self, _input: u64, _output: u64) -> Self {
+    pub fn with_tokens(self, _input: u64, _output: u64) -> Self {
         // Note: CostOutput doesn't currently track tokens directly
         // This method is a placeholder for future extension
         self

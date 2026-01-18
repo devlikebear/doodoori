@@ -1,6 +1,6 @@
 [package]
 name = "doodoori"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2024"
 description = "Autonomous CLI tool that uses Claude Code internally to complete goals without user intervention"
 authors = ["devlikebear <devlikebear@gmail.com>"]
@@ -76,7 +76,12 @@ default = []
 sandbox = ["bollard", "futures-util"]
 dashboard = ["ratatui", "crossterm"]
 keychain = ["dep:keyring"]
+price-update = []
 full = ["sandbox", "dashboard", "keychain"]
+
+[lib]
+name = "doodoori"
+path = "src/lib.rs"
 
 [[bin]]
 name = "doodoori"

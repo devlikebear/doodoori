@@ -1,0 +1,16 @@
+name: clean-imports
+description: Clean up and organize imports
+category: refactor
+tags: [refactor, imports, cleanup]
+variables:
+  - name: path
+    description: File or directory path
+    required: true
+prompt: |
+  Clean up imports in "{path}".
+
+  Requirements:
+  - Remove unused imports
+  - Sort imports alphabetically
+  - Group imports by category (std, external, internal)
+  - Follow the project's import style conventions

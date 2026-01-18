@@ -2,6 +2,20 @@
 
 이 프로젝트에서 Claude가 따라야 할 개발 규칙입니다.
 
+## Model & Pricing Reference
+
+모델명과 가격 정보 업데이트 시 다음 공식 문서를 참조:
+- **모델 개요**: https://platform.claude.com/docs/ko/about-claude/models/overview
+- **가격 정보**: https://platform.claude.com/docs/ko/about-claude/pricing
+
+관련 파일:
+- `price.toml` - 가격 정보 및 모델 ID 정의
+- `src/claude/models.rs` - ModelAlias와 모델 ID 매핑
+
+**Claude Code CLI는 alias를 직접 사용** (haiku, sonnet, opus)
+- CLI 호출 시: `--model sonnet` (alias 사용)
+- 가격 계산 시: 전체 모델 ID 사용 (예: `claude-sonnet-4-5-20250929`)
+
 ## Core Principles
 
 ### 1. TDD (Test-Driven Development)

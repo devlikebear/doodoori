@@ -1,0 +1,22 @@
+name: fix-bug
+description: Fix a bug in the codebase
+category: fix
+tags: [fix, bug, debug]
+variables:
+  - name: description
+    description: Bug description
+    required: true
+  - name: file
+    description: File where bug is located (optional)
+    required: false
+    default: ""
+prompt: |
+  Fix the following bug: {description}
+
+  {file}
+
+  Requirements:
+  - Identify the root cause
+  - Implement a fix that doesn't break existing functionality
+  - Add or update tests to prevent regression
+  - Document the fix in code comments if complex

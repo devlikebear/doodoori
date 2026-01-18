@@ -1,0 +1,24 @@
+name: cli-command
+description: Create a new CLI subcommand
+category: scaffold
+tags: [rust, cli, clap]
+default_model: sonnet
+variables:
+  - name: name
+    description: Command name
+    required: true
+  - name: description
+    description: Command description
+    required: true
+prompt: |
+  Create a new CLI subcommand "{name}" for this Rust CLI application.
+
+  Description: {description}
+
+  Requirements:
+  - Use clap derive macros
+  - Follow existing command patterns in src/cli/commands/
+  - Add appropriate arguments and flags
+  - Include help text for all options
+  - Implement the execute method
+  - Add unit tests

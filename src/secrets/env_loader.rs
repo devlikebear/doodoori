@@ -1,4 +1,5 @@
 //! Environment variable loader with dotenvy integration
+#![allow(dead_code)]
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;

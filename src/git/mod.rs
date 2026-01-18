@@ -1,4 +1,5 @@
 //! Git workflow and worktree management module
+#![allow(dead_code)]
 //!
 //! Provides comprehensive git operations including:
 //! - Repository management (init, open, status)

@@ -2,6 +2,7 @@
 //!
 //! Implements the Conventional Commits specification for structured commit messages.
 //! https://www.conventionalcommits.org/
+#![allow(dead_code)]
 
 use super::{GitError, Result};
 use serde::{Deserialize, Serialize};

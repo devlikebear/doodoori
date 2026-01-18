@@ -2,7 +2,7 @@
 
 mod history;
 
-pub use history::{CostEntry, CostHistory, CostHistoryManager, DailySummary};
+pub use history::CostHistoryManager;
 
 use anyhow::{Context, Result};
 use serde::Deserialize;

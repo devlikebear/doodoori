@@ -1,4 +1,5 @@
 //! Secrets management module for environment variables and keychain integration
+#![allow(dead_code)]
 
 mod env_loader;
 mod masking;
@@ -6,8 +7,7 @@ mod masking;
 #[cfg(feature = "keychain")]
 mod keychain;
 
-pub use env_loader::{EnvLoader, EnvSource};
-pub use masking::{MaskingLayer, SecretMasker};
+pub use env_loader::EnvLoader;
 
 #[cfg(feature = "keychain")]
 pub use keychain::{KeychainManager, KeychainError};
