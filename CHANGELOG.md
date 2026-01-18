@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-01-18
+
+### Added
+
+- **Template System**: Pre-built and custom task templates for common scenarios
+  - `doodoori template list` - List available templates (with category/tag filters)
+  - `doodoori template show <name>` - Show template details
+  - `doodoori template use <name>` - Use a template with variables
+  - `doodoori template create` - Create a new user template
+  - `doodoori template delete` - Delete a user template
+  - `doodoori run --template <name> --var key=value` - Run with template
+  - Built-in templates: api-endpoint, cli-command, add-tests, fix-bug, add-docs, react-component, extract-function, clean-imports, integration-test
+  - Custom user templates in `~/.doodoori/templates/`
+  - Project templates in `.doodoori/templates/`
+
+### Tests
+
+- 278 unit tests (49 new tests for template module)
+
 ## [0.12.0] - 2026-01-17
 
 ### Added
