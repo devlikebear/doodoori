@@ -7,7 +7,7 @@ use std::path::Path;
 use commands::{
     cost::CostArgs, dashboard::DashboardArgs, git::GitArgs, parallel::ParallelArgs,
     resume::ResumeArgs, run::RunArgs, sandbox::SandboxArgs, secret::SecretArgs, spec::SpecArgs,
-    watch::WatchArgs, workflow::WorkflowArgs,
+    template::TemplateCommand, watch::WatchArgs, workflow::WorkflowArgs,
 };
 use crate::config::DoodooriConfig;
 use crate::pricing::{format_cost, CostCalculator, PricingConfig};
@@ -69,6 +69,12 @@ pub enum Commands {
     /// Watch for file changes and run tasks automatically
     Watch(WatchArgs),
 
+    /// Manage templates
+    Template {
+        #[command(subcommand)]
+        command: TemplateCommand,
+    },
+
     /// Show current configuration
     Config,
 
@@ -99,6 +105,15 @@ impl Cli {
             Commands::Dashboard(args) => args.execute().await,
             Commands::Git(args) => args.execute().await,
             Commands::Watch(args) => args.execute().await,
+            Commands::Template { command } => {
+                match command {
+                    TemplateCommand::List(args) => args.execute().await,
+                    TemplateCommand::Show(args) => args.execute().await,
+                    TemplateCommand::Use(args) => args.execute().await,
+                    TemplateCommand::Create(args) => args.execute().await,
+                    TemplateCommand::Delete(args) => args.execute().await,
+                }
+            }
             Commands::Config => {
                 self.execute_config().await
             }
@@ -758,6 +773,91 @@ mod tests {
                 }
             }
             _ => panic!("Expected Sandbox command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_template_list() {
+        let cli = Cli::try_parse_from(["doodoori", "template", "list"]).unwrap();
+
+        match cli.command {
+            Commands::Template { command } => {
+                matches!(command, TemplateCommand::List(_));
+            }
+            _ => panic!("Expected Template command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_template_show() {
+        let cli = Cli::try_parse_from(["doodoori", "template", "show", "api-endpoint"]).unwrap();
+
+        match cli.command {
+            Commands::Template { command } => {
+                match command {
+                    TemplateCommand::Show(args) => {
+                        assert_eq!(args.name, "api-endpoint");
+                    }
+                    _ => panic!("Expected Show subcommand"),
+                }
+            }
+            _ => panic!("Expected Template command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_template_use() {
+        let cli = Cli::try_parse_from([
+            "doodoori", "template", "use", "api-endpoint",
+            "--var", "name=users"
+        ]).unwrap();
+
+        match cli.command {
+            Commands::Template { command } => {
+                match command {
+                    TemplateCommand::Use(args) => {
+                        assert_eq!(args.name, "api-endpoint");
+                        assert_eq!(args.var, vec!["name=users"]);
+                    }
+                    _ => panic!("Expected Use subcommand"),
+                }
+            }
+            _ => panic!("Expected Template command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_template_create() {
+        let cli = Cli::try_parse_from(["doodoori", "template", "create", "my-template"]).unwrap();
+
+        match cli.command {
+            Commands::Template { command } => {
+                match command {
+                    TemplateCommand::Create(args) => {
+                        assert_eq!(args.name, "my-template");
+                    }
+                    _ => panic!("Expected Create subcommand"),
+                }
+            }
+            _ => panic!("Expected Template command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_template_delete() {
+        let cli = Cli::try_parse_from(["doodoori", "template", "delete", "my-template"]).unwrap();
+
+        match cli.command {
+            Commands::Template { command } => {
+                match command {
+                    TemplateCommand::Delete(args) => {
+                        assert_eq!(args.name, "my-template");
+                        assert!(!args.force);
+                    }
+                    _ => panic!("Expected Delete subcommand"),
+                }
+            }
+            _ => panic!("Expected Template command"),
         }
     }
 }
