@@ -1,0 +1,22 @@
+name: extract-function
+description: Extract code into a separate function
+category: refactor
+tags: [refactor, clean-code]
+variables:
+  - name: file
+    description: File path to refactor
+    required: true
+  - name: description
+    description: Description of the code to extract
+    required: true
+prompt: |
+  Refactor the code in "{file}".
+
+  Task: {description}
+
+  Requirements:
+  - Extract the relevant code into a well-named function
+  - Ensure proper parameter passing
+  - Maintain existing functionality
+  - Add documentation comments
+  - Update any callers if necessary

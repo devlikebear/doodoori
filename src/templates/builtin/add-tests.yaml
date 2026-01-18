@@ -1,0 +1,22 @@
+name: add-tests
+description: Add unit tests for a file or module
+category: test
+tags: [test, unit-test, tdd]
+variables:
+  - name: file
+    description: File to add tests for
+    required: true
+  - name: coverage
+    description: Target coverage level
+    default: "80%"
+    required: false
+prompt: |
+  Add unit tests for "{file}".
+
+  Requirements:
+  - Achieve at least {coverage} code coverage
+  - Test all public functions and methods
+  - Include edge cases and error conditions
+  - Use descriptive test names
+  - Follow existing test patterns in the codebase
+  - Use appropriate mocking where necessary

@@ -1,0 +1,17 @@
+name: add-docs
+description: Add documentation to code
+category: docs
+tags: [docs, documentation, comments]
+variables:
+  - name: path
+    description: File or module path
+    required: true
+prompt: |
+  Add documentation to "{path}".
+
+  Requirements:
+  - Add doc comments to all public items
+  - Include examples in documentation where helpful
+  - Document parameters, return values, and errors
+  - Follow Rust doc conventions (/// and //!)
+  - Keep documentation concise but informative

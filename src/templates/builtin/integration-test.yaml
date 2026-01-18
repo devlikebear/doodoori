@@ -1,0 +1,17 @@
+name: integration-test
+description: Add integration tests
+category: test
+tags: [test, integration, e2e]
+variables:
+  - name: feature
+    description: Feature to test
+    required: true
+prompt: |
+  Create integration tests for the "{feature}" feature.
+
+  Requirements:
+  - Test the feature end-to-end
+  - Include setup and teardown
+  - Test success and failure scenarios
+  - Use realistic test data
+  - Follow existing integration test patterns
