@@ -313,11 +313,12 @@ impl ClaudeRunner {
 
     /// Build the command arguments for Claude Code
     fn build_args(&self, prompt: &str) -> Vec<String> {
-        // Note: --verbose is required when using --output-format=stream-json with --print
+        // Build arguments for Claude Code CLI
         // Use alias (haiku, sonnet, opus) instead of full model ID
         // Claude Code CLI resolves aliases to the best available model internally
+        //
+        // Note: Do NOT use --print as it prevents actual tool execution
         let mut args = vec![
-            "--print".to_string(),
             "--output-format".to_string(),
             "stream-json".to_string(),
             "--verbose".to_string(),
@@ -522,7 +523,8 @@ mod tests {
         let runner = ClaudeRunner::new(ClaudeConfig::default());
         let args = runner.build_args("Test prompt");
 
-        assert!(args.contains(&"--print".to_string()));
+        // --print should NOT be present (it prevents actual tool execution)
+        assert!(!args.contains(&"--print".to_string()));
         assert!(args.contains(&"stream-json".to_string()));
         assert!(args.contains(&"--verbose".to_string()));
         assert!(args.contains(&"-p".to_string()));
