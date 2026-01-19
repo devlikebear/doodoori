@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2026-01-19
+
+### Added
+
+- **Enhanced TUI Dashboard**: Major improvements to the dashboard feature
+  - **Task Detail View**: Press `Enter` to view detailed task information
+  - **Log Viewer**: Press `l` to view task logs
+    - Real-time log tailing for running tasks (tail -f style)
+    - Historical logs for completed tasks
+    - Logs stored in `.doodoori/logs/{task_id}.log`
+  - **Log Level Filtering**: Press `Tab` in log view to cycle through filters
+    - Filters: ALL, INFO, ERROR, CLAUDE, TOOL
+    - Syntax highlighting by log level
+  - **Task Management**:
+    - Press `k` to kill running tasks
+    - Press `p` to prune stale tasks (orphaned running states)
+    - Press `r` to restart failed/interrupted tasks
+  - **Budget Alerts**: Cost tab shows budget warnings
+    - Yellow warning at 80% budget usage
+    - Red alert when budget exceeded
+    - Budget limit loaded from `doodoori.toml`
+
+### Changed
+
+- Dashboard now loads `budget_limit` from doodoori.toml configuration
+- Improved dashboard footer with compact keyboard shortcuts
+
+### Fixed
+
+- Dead code warnings in secrets module (added conditional allow attributes)
+- Unused imports cleanup in keychain module
+
+### Tests
+
+- 313 unit tests (35 new tests for dashboard features)
+  - Tests for kill/prune functionality
+  - Tests for restart feature
+  - Tests for log filter cycling
+
 ## [0.13.0] - 2026-01-18
 
 ### Added
