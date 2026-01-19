@@ -1158,5 +1158,73 @@ mod tests {
             app.scroll_to_bottom();
             assert_eq!(app.log_scroll, 0);
         }
+
+        #[test]
+        fn test_status_message() {
+            let mut app = App::new(false);
+
+            assert!(app.status_message.is_none());
+
+            app.set_status("Test message".to_string());
+            assert!(app.status_message.is_some());
+
+            let (msg, _) = app.status_message.as_ref().unwrap();
+            assert_eq!(msg, "Test message");
+        }
+
+        #[test]
+        fn test_kill_selected_task_not_running() {
+            use crate::state::{TaskState, TaskStatus, TokenUsage};
+            use chrono::Utc;
+
+            let mut app = App::new(false);
+
+            // Create a completed task
+            let task = TaskState {
+                task_id: "test-task-12345678".to_string(),
+                prompt: "Test prompt".to_string(),
+                model: "sonnet".to_string(),
+                max_iterations: 5,
+                current_iteration: 3,
+                status: TaskStatus::Completed,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                duration_ms: 1000,
+                usage: TokenUsage::default(),
+                total_cost_usd: 0.0,
+                session_id: None,
+                error: None,
+                final_output: None,
+                working_dir: Some(".".to_string()),
+            };
+            app.tasks = vec![task];
+            app.selected_task = 0;
+
+            // Try to kill a completed task - should set error message
+            app.kill_selected_task();
+
+            assert!(app.status_message.is_some());
+            let (msg, _) = app.status_message.as_ref().unwrap();
+            assert!(msg.contains("not running"));
+        }
+
+        #[test]
+        fn test_kill_selected_task_empty_list() {
+            let mut app = App::new(false);
+            app.tasks = vec![];
+
+            // Should not panic with empty task list
+            app.kill_selected_task();
+        }
+
+        #[test]
+        fn test_prune_stale_tasks_sets_message() {
+            let mut app = App::new(false);
+
+            // Prune should always set a status message
+            app.prune_stale_tasks();
+
+            assert!(app.status_message.is_some());
+        }
     }
 }
