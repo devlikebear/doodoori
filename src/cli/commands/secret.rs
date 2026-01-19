@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use clap::{Args, Subcommand};
+use std::io::{self, BufRead, Write};
 
 /// Arguments for the secret command
 #[derive(Args, Debug)]
