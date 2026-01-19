@@ -1,8 +1,11 @@
 use anyhow::Result;
 use clap::Args;
+use console::{style, Emoji};
+use std::io::{self, Write};
 use std::path::Path;
 
-use crate::instructions::{validate, SpecParser};
+use crate::claude::ModelAlias;
+use crate::instructions::{validate, Requirement, SpecFile, SpecParser};
 
 /// Generate or manage spec files
 #[derive(Args, Debug)]
@@ -69,9 +72,242 @@ impl SpecArgs {
     }
 
     async fn interactive_generate(&self) -> Result<()> {
-        println!("Interactive spec generation not yet implemented");
-        println!("Use: doodoori spec \"<description>\" instead");
+        println!(
+            "\n{} {}",
+            Emoji("📝", ""),
+            style("Interactive Spec Generator").bold().cyan()
+        );
+        println!("{}\n", style("─".repeat(40)).dim());
+
+        let mut spec = SpecFile::default();
+
+        // 1. Title
+        spec.title = self.prompt_required("Task title")?;
+
+        // 2. Objective
+        println!(
+            "\n{} (press Enter twice to finish):",
+            style("Objective").bold()
+        );
+        spec.objective = self.prompt_multiline()?;
+
+        // 3. Model selection
+        spec.model = Some(self.prompt_model()?);
+
+        // 4. Requirements
+        println!(
+            "\n{} (empty line to finish):",
+            style("Requirements").bold()
+        );
+        spec.requirements = self.prompt_requirements()?;
+
+        // 5. Constraints (optional)
+        println!(
+            "\n{} (empty line to skip/finish):",
+            style("Constraints (optional)").bold()
+        );
+        spec.constraints = self.prompt_list()?;
+
+        // 6. Budget (optional)
+        if let Some(budget) = self.prompt_optional_number("Budget in USD (optional)")? {
+            spec.budget = Some(budget);
+        }
+
+        // 7. Max iterations
+        spec.max_iterations = Some(
+            self.prompt_optional_number("Max iterations")?
+                .map(|n| n as u32)
+                .unwrap_or(50),
+        );
+
+        // 8. Completion promise
+        spec.completion_promise = Some("<promise>COMPLETE</promise>".to_string());
+
+        // Preview
+        println!("\n{}", style("─".repeat(40)).dim());
+        println!(
+            "{} {}",
+            Emoji("👁️", ""),
+            style("Preview").bold().green()
+        );
+        println!("{}\n", style("─".repeat(40)).dim());
+
+        let content = SpecParser::to_markdown(&spec);
+        println!("{}", content);
+
+        // Confirm
+        println!("{}", style("─".repeat(40)).dim());
+        if !self.prompt_confirm("Save this spec?")? {
+            println!("{} Cancelled", Emoji("❌", ""));
+            return Ok(());
+        }
+
+        // Save
+        let output = self.output.clone().unwrap_or_else(|| "spec.md".to_string());
+        tokio::fs::write(&output, &content).await?;
+
+        println!(
+            "\n{} Spec file created: {}",
+            Emoji("✅", ""),
+            style(&output).green()
+        );
+
         Ok(())
+    }
+
+    /// Prompt for a required string input
+    fn prompt_required(&self, label: &str) -> Result<String> {
+        loop {
+            print!("{}: ", style(label).bold());
+            io::stdout().flush()?;
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            let input = input.trim().to_string();
+
+            if !input.is_empty() {
+                return Ok(input);
+            }
+
+            println!("{} This field is required", style("!").red());
+        }
+    }
+
+    /// Prompt for multiline input (ends with empty line)
+    fn prompt_multiline(&self) -> Result<String> {
+        let mut lines = Vec::new();
+        let mut empty_count = 0;
+
+        loop {
+            print!("  ");
+            io::stdout().flush()?;
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            let line = input.trim_end_matches('\n').trim_end_matches('\r');
+
+            if line.is_empty() {
+                empty_count += 1;
+                if empty_count >= 1 && !lines.is_empty() {
+                    break;
+                }
+            } else {
+                empty_count = 0;
+                lines.push(line.to_string());
+            }
+        }
+
+        Ok(lines.join("\n"))
+    }
+
+    /// Prompt for model selection
+    fn prompt_model(&self) -> Result<ModelAlias> {
+        println!("\n{}", style("Select model").bold());
+        println!("  1. {} (fastest, cheapest)", style("haiku").cyan());
+        println!("  2. {} (balanced, recommended)", style("sonnet").green());
+        println!("  3. {} (most capable)", style("opus").magenta());
+
+        loop {
+            print!("Choice [1-3, default=2]: ");
+            io::stdout().flush()?;
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            let input = input.trim();
+
+            match input {
+                "" | "2" => return Ok(ModelAlias::Sonnet),
+                "1" => return Ok(ModelAlias::Haiku),
+                "3" => return Ok(ModelAlias::Opus),
+                _ => println!("{} Please enter 1, 2, or 3", style("!").red()),
+            }
+        }
+    }
+
+    /// Prompt for a list of requirements
+    fn prompt_requirements(&self) -> Result<Vec<Requirement>> {
+        let mut requirements = Vec::new();
+        let mut index = 1;
+
+        loop {
+            print!("  {}. ", index);
+            io::stdout().flush()?;
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            let input = input.trim().to_string();
+
+            if input.is_empty() {
+                break;
+            }
+
+            requirements.push(Requirement::new(input));
+            index += 1;
+        }
+
+        Ok(requirements)
+    }
+
+    /// Prompt for a list of strings
+    fn prompt_list(&self) -> Result<Vec<String>> {
+        let mut items = Vec::new();
+
+        loop {
+            print!("  - ");
+            io::stdout().flush()?;
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            let input = input.trim().to_string();
+
+            if input.is_empty() {
+                break;
+            }
+
+            items.push(input);
+        }
+
+        Ok(items)
+    }
+
+    /// Prompt for an optional number
+    fn prompt_optional_number(&self, label: &str) -> Result<Option<f64>> {
+        print!("{}: ", style(label).bold());
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let input = input.trim();
+
+        if input.is_empty() {
+            return Ok(None);
+        }
+
+        match input.parse::<f64>() {
+            Ok(n) => Ok(Some(n)),
+            Err(_) => {
+                println!("{} Invalid number, skipping", style("!").yellow());
+                Ok(None)
+            }
+        }
+    }
+
+    /// Prompt for yes/no confirmation
+    fn prompt_confirm(&self, label: &str) -> Result<bool> {
+        loop {
+            print!("{} [Y/n]: ", style(label).bold());
+            io::stdout().flush()?;
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            let input = input.trim().to_lowercase();
+
+            match input.as_str() {
+                "" | "y" | "yes" => return Ok(true),
+                "n" | "no" => return Ok(false),
+                _ => println!("{} Please enter y or n", style("!").red()),
+            }
+        }
     }
 
     async fn validate_spec(&self, path: &str) -> Result<()> {

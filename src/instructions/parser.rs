@@ -364,6 +364,11 @@ impl SpecParser {
             md.push_str(&format!("## Completion Criteria\n{}\n\n", criteria));
         }
 
+        // Budget
+        if let Some(budget) = spec.budget {
+            md.push_str(&format!("## Budget\n{:.2} USD\n\n", budget));
+        }
+
         // Max Iterations
         if let Some(max) = spec.max_iterations {
             md.push_str(&format!("## Max Iterations\n{}\n\n", max));
@@ -511,6 +516,20 @@ Frontend implementation
     }
 
     #[test]
+    fn test_to_markdown_with_budget() {
+        let spec = SpecFile {
+            title: "Budget Test".to_string(),
+            objective: "Test budget field".to_string(),
+            budget: Some(15.50),
+            ..Default::default()
+        };
+
+        let md = SpecParser::to_markdown(&spec);
+
+        assert!(md.contains("## Budget\n15.50 USD"));
+    }
+
+    #[test]
     fn test_roundtrip() {
         let original = SpecFile {
             title: "Roundtrip Test".to_string(),
@@ -529,5 +548,20 @@ Frontend implementation
         assert_eq!(parsed.model, original.model);
         assert_eq!(parsed.requirements.len(), original.requirements.len());
         assert_eq!(parsed.max_iterations, original.max_iterations);
+    }
+
+    #[test]
+    fn test_roundtrip_with_budget() {
+        let original = SpecFile {
+            title: "Budget Roundtrip".to_string(),
+            objective: "Test budget roundtrip".to_string(),
+            budget: Some(25.00),
+            ..Default::default()
+        };
+
+        let md = SpecParser::to_markdown(&original);
+        let parsed = SpecParser::parse(&md).unwrap();
+
+        assert_eq!(parsed.budget, Some(25.00));
     }
 }
