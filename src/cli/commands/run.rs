@@ -8,6 +8,17 @@ use crate::loop_engine::{LoopConfig, LoopEngine, LoopEvent, LoopStatus};
 use crate::notifications::{NotificationManager, NotificationsConfig};
 use crate::output::{OutputFormat, OutputWriter, TaskOutput};
 
+/// Truncate a string to a maximum number of characters (Unicode-safe)
+fn truncate_str(s: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() > max_chars {
+        let truncated: String = chars[..max_chars.saturating_sub(3)].iter().collect();
+        format!("{}...", truncated)
+    } else {
+        s.to_string()
+    }
+}
+
 /// Run a task with Claude Code
 #[derive(Args, Debug)]
 pub struct RunArgs {
@@ -210,7 +221,7 @@ impl RunArgs {
 
         println!("{} Doodoori is forging your code...", Emoji("🔨", ""));
         println!();
-        println!("  Task:       {}", if prompt.len() > 60 { format!("{}...", &prompt[..57]) } else { prompt.to_string() });
+        println!("  Task:       {}", truncate_str(prompt, 60));
         println!("  Model:      {:?}", model);
         println!("  Max Iter:   {}", max_iterations);
         if let Some(budget) = self.budget {
