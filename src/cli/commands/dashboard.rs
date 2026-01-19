@@ -94,6 +94,8 @@ mod tui {
         pub log_scroll: usize,
         /// Is log auto-scrolling (for real-time)
         pub log_auto_scroll: bool,
+        /// Status message to display
+        pub status_message: Option<(String, Instant)>,
     }
 
     impl App {
@@ -116,6 +118,7 @@ mod tui {
                 log_content: Vec::new(),
                 log_scroll: 0,
                 log_auto_scroll: true,
+                status_message: None,
             };
 
             app.load_tasks();
@@ -266,6 +269,167 @@ mod tui {
             if self.view_mode == ViewMode::LogView {
                 self.load_log_content();
             }
+            // Clear old status messages (after 3 seconds)
+            if let Some((_, time)) = &self.status_message {
+                if time.elapsed() > Duration::from_secs(3) {
+                    self.status_message = None;
+                }
+            }
+        }
+
+        /// Kill the selected running task
+        pub fn kill_selected_task(&mut self) {
+            if let Some(task) = self.tasks.get(self.selected_task) {
+                if task.status != crate::state::TaskStatus::Running {
+                    self.status_message = Some((
+                        format!("Task {} is not running", &task.task_id[..8]),
+                        Instant::now(),
+                    ));
+                    return;
+                }
+
+                // Try to find and kill the process
+                let task_id = task.task_id.clone();
+                match Self::find_and_kill_task(&task_id) {
+                    Ok(killed) => {
+                        if killed {
+                            // Update state to interrupted
+                            if let Some(ref state_manager) = self.state_manager {
+                                if let Ok(Some(mut state)) = state_manager.load_state() {
+                                    if state.task_id == task_id {
+                                        state.status = crate::state::TaskStatus::Interrupted;
+                                        let _ = state_manager.save_state(&state);
+                                    }
+                                }
+                            }
+                            self.status_message = Some((
+                                format!("✓ Killed task {}", &task_id[..8]),
+                                Instant::now(),
+                            ));
+                            self.load_tasks();
+                        } else {
+                            self.status_message = Some((
+                                format!("Process not found for task {}", &task_id[..8]),
+                                Instant::now(),
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        self.status_message = Some((
+                            format!("Failed to kill: {}", e),
+                            Instant::now(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        /// Find and kill a task's process
+        fn find_and_kill_task(task_id: &str) -> Result<bool> {
+            use std::process::Command;
+
+            // Find doodoori processes
+            let output = Command::new("pgrep")
+                .args(["-f", &format!("doodoori.*{}", &task_id[..8])])
+                .output()?;
+
+            if output.status.success() {
+                let pids: Vec<&str> = std::str::from_utf8(&output.stdout)?
+                    .trim()
+                    .lines()
+                    .collect();
+
+                for pid in pids {
+                    let _ = Command::new("kill")
+                        .args(["-TERM", pid])
+                        .output();
+                }
+                Ok(true)
+            } else {
+                // Try finding claude process with session
+                let output = Command::new("pgrep")
+                    .args(["-f", "claude.*--print"])
+                    .output()?;
+
+                if output.status.success() {
+                    let pids: Vec<&str> = std::str::from_utf8(&output.stdout)?
+                        .trim()
+                        .lines()
+                        .collect();
+
+                    let has_pids = !pids.is_empty();
+                    for pid in pids {
+                        let _ = Command::new("kill")
+                            .args(["-TERM", pid])
+                            .output();
+                    }
+                    Ok(has_pids)
+                } else {
+                    Ok(false)
+                }
+            }
+        }
+
+        /// Prune stale tasks (running state but no process)
+        pub fn prune_stale_tasks(&mut self) {
+            let mut pruned_count = 0;
+
+            if let Some(ref state_manager) = self.state_manager {
+                // Check current state
+                if let Ok(Some(mut state)) = state_manager.load_state() {
+                    if state.status == crate::state::TaskStatus::Running {
+                        // Check if process exists
+                        if !Self::is_task_process_running(&state.task_id) {
+                            state.status = crate::state::TaskStatus::Interrupted;
+                            state.error = Some("Pruned: process not found".to_string());
+                            let _ = state_manager.save_state(&state);
+                            pruned_count += 1;
+                        }
+                    }
+                }
+            }
+
+            self.load_tasks();
+            self.status_message = Some((
+                if pruned_count > 0 {
+                    format!("✓ Pruned {} stale task(s)", pruned_count)
+                } else {
+                    "No stale tasks found".to_string()
+                },
+                Instant::now(),
+            ));
+        }
+
+        /// Check if a task's process is still running
+        fn is_task_process_running(task_id: &str) -> bool {
+            use std::process::Command;
+
+            // Check for doodoori process with task ID
+            let output = Command::new("pgrep")
+                .args(["-f", &format!("doodoori.*{}", &task_id[..8])])
+                .output();
+
+            if let Ok(output) = output {
+                if output.status.success() && !output.stdout.is_empty() {
+                    return true;
+                }
+            }
+
+            // Check for any claude process
+            let output = Command::new("pgrep")
+                .args(["-f", "claude.*--print"])
+                .output();
+
+            if let Ok(output) = output {
+                output.status.success() && !output.stdout.is_empty()
+            } else {
+                false
+            }
+        }
+
+        /// Set status message
+        pub fn set_status(&mut self, message: String) {
+            self.status_message = Some((message, Instant::now()));
         }
     }
 
@@ -303,12 +467,15 @@ mod tui {
                                 KeyCode::Down => app.next_task(),
                                 KeyCode::Enter => app.view_task_detail(),
                                 KeyCode::Char('l') => app.view_logs(),
+                                KeyCode::Char('k') => app.kill_selected_task(),
+                                KeyCode::Char('p') => app.prune_stale_tasks(),
                                 _ => {}
                             },
                             ViewMode::TaskDetail => match key.code {
                                 KeyCode::Char('q') => app.should_quit = true,
                                 KeyCode::Esc => app.back_to_list(),
                                 KeyCode::Char('l') => app.view_logs(),
+                                KeyCode::Char('k') => app.kill_selected_task(),
                                 _ => {}
                             },
                             ViewMode::LogView => match key.code {
@@ -397,11 +564,20 @@ mod tui {
             _ => {}
         }
 
-        // Footer
-        let footer =
-            Paragraph::new("Press 'q' to quit, ↑/↓ to navigate, Enter for details, 'l' for logs")
-                .style(Style::default().fg(Color::DarkGray))
-                .block(Block::default().borders(Borders::ALL));
+        // Footer - show status message if available, otherwise show shortcuts
+        let footer_text = if let Some((msg, _)) = &app.status_message {
+            msg.clone()
+        } else {
+            "Press 'q' to quit, ↑/↓ to navigate, Enter for details, 'l' for logs, 'k' to kill, 'p' to prune".to_string()
+        };
+        let footer_style = if app.status_message.is_some() {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        let footer = Paragraph::new(footer_text)
+            .style(footer_style)
+            .block(Block::default().borders(Borders::ALL));
         f.render_widget(footer, chunks[2]);
     }
 
@@ -606,7 +782,7 @@ mod tui {
             f.render_widget(paragraph, chunks[0]);
         }
 
-        let footer = Paragraph::new("Press 'l' for logs, Esc to go back, 'q' to quit")
+        let footer = Paragraph::new("Press 'l' for logs, 'k' to kill, Esc to go back, 'q' to quit")
             .style(Style::default().fg(Color::DarkGray))
             .block(Block::default().borders(Borders::ALL));
         f.render_widget(footer, chunks[1]);
@@ -700,6 +876,14 @@ mod tui {
             Line::from(vec![
                 Span::styled("  l         ", Style::default().fg(Color::Cyan)),
                 Span::raw("View logs"),
+            ]),
+            Line::from(vec![
+                Span::styled("  k         ", Style::default().fg(Color::Cyan)),
+                Span::raw("Kill running task"),
+            ]),
+            Line::from(vec![
+                Span::styled("  p         ", Style::default().fg(Color::Cyan)),
+                Span::raw("Prune stale tasks"),
             ]),
             Line::from(""),
             Line::from(vec![Span::styled(

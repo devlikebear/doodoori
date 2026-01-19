@@ -2,7 +2,8 @@
 
 use anyhow::Result;
 use clap::{Args, Subcommand};
-use std::io::{self, BufRead, Write};
+#[cfg(feature = "keychain")]
+use std::io::{self, Write};
 
 /// Arguments for the secret command
 #[derive(Args, Debug)]
