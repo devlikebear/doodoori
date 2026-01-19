@@ -291,12 +291,41 @@ doodoori dashboard
 
 # With custom refresh interval
 doodoori dashboard --refresh 1000
+
+# Show only active tasks
+doodoori dashboard --active-only
 ```
 
-**Dashboard features:**
-- Real-time task monitoring
-- Cost summary view
-- Keyboard navigation (Tab, q to quit)
+**Dashboard views:**
+- **Tasks tab**: List all tasks with status, iterations, cost
+- **Cost tab**: Monthly/total cost summary with budget alerts
+- **Help tab**: Keyboard shortcuts reference
+
+**Keyboard shortcuts:**
+
+| Key | Action |
+|-----|--------|
+| `↑/↓` | Navigate task list |
+| `Enter` | View task details |
+| `l` | View task logs |
+| `r` | Restart failed/interrupted task |
+| `k` | Kill running task |
+| `p` | Prune stale tasks |
+| `Tab` | Switch tabs / Cycle log filter |
+| `f` | Toggle auto-scroll (in log view) |
+| `Esc` | Go back |
+| `q` | Quit |
+
+**Log view features:**
+- Real-time log tailing for running tasks
+- Historical logs for completed tasks
+- Log level filtering (ALL/INFO/ERROR/CLAUDE/TOOL)
+- Syntax highlighting by log level
+
+**Budget alerts:**
+- Shows budget limit from `doodoori.toml`
+- Yellow warning at 80% usage
+- Red alert when budget exceeded
 
 ## Hooks
 
@@ -734,6 +763,7 @@ doodoori spec --validate api-spec.md
 - [x] Phase 11: Watch Mode (file monitoring, auto-run)
 - [x] Phase 12: Output Formatters (JSON, YAML, Markdown output)
 - [x] Phase 13: Template System (pre-built and custom task templates)
+- [x] Phase 14: Enhanced Dashboard (task details, logs, kill/prune/restart, filtering, budget alerts)
 
 ## License
 
