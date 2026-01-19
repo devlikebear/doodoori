@@ -855,6 +855,15 @@ impl RunArgs {
             style("Starting detached task...").bold().cyan()
         );
 
+        // Warn about auto-yolo in detached mode
+        if !self.yolo && !self.readonly {
+            println!(
+                "  {} {}",
+                Emoji("⚠️", "!"),
+                style("Auto-enabling YOLO mode (required for background execution)").yellow()
+            );
+        }
+
         // Build the command arguments
         let mut args = vec!["run".to_string()];
 
@@ -888,7 +897,9 @@ impl RunArgs {
             args.push("--network".to_string());
             args.push(self.network.clone());
         }
-        if self.yolo {
+        // In detached mode, auto-enable yolo unless readonly is specified
+        // (interactive permission prompts don't work in background)
+        if self.yolo || (!self.readonly) {
             args.push("--yolo".to_string());
         }
         if self.readonly {
