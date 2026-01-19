@@ -487,7 +487,7 @@ impl LoopEngine {
                         // Extract text from assistant events
                         if let ClaudeEvent::Assistant(ref asst) = event {
                             if let Some(ref msg) = asst.message {
-                                output_buffer.push_str(msg);
+                                output_buffer.push_str(&msg.as_text());
                             }
                         }
 

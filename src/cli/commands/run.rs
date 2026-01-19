@@ -493,10 +493,11 @@ impl RunArgs {
             ClaudeEvent::Assistant(asst) => {
                 if let Some(ref msg) = asst.message {
                     // Truncate long messages
-                    let display_msg = if msg.len() > 200 {
-                        format!("{}...", &msg[..197])
+                    let text = msg.as_text();
+                    let display_msg = if text.len() > 200 {
+                        format!("{}...", &text[..197])
                     } else {
-                        msg.clone()
+                        text
                     };
                     println!("{} {}", Emoji("🤖", "[AI]"), style(display_msg).dim());
                 }

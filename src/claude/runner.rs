@@ -75,8 +75,89 @@ pub struct SystemEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssistantEvent {
+    /// Message can be either a string (legacy) or an object (new format)
     #[serde(default)]
-    pub message: Option<String>,
+    pub message: Option<AssistantMessage>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+}
+
+/// Assistant message - can be a simple string or complex object
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AssistantMessage {
+    /// Simple text message
+    Text(String),
+    /// Complex message object from Claude API
+    Object(AssistantMessageObject),
+}
+
+impl AssistantMessage {
+    /// Extract text content from the message
+    pub fn as_text(&self) -> String {
+        match self {
+            AssistantMessage::Text(s) => s.clone(),
+            AssistantMessage::Object(obj) => {
+                // Extract text from content blocks
+                if let Some(content) = &obj.content {
+                    content
+                        .iter()
+                        .filter_map(|block| match block {
+                            ContentBlock::Text { text } => Some(text.as_str()),
+                            ContentBlock::ToolUse { name, .. } => Some(name.as_str()),
+                            ContentBlock::Unknown => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                } else {
+                    String::new()
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssistantMessageObject {
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub content: Option<Vec<ContentBlock>>,
+    #[serde(default)]
+    pub stop_reason: Option<String>,
+    #[serde(default)]
+    pub usage: Option<MessageUsage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentBlock {
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MessageUsage {
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
+    #[serde(default)]
+    pub cache_creation_input_tokens: u64,
+    #[serde(default)]
+    pub cache_read_input_tokens: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -345,9 +426,10 @@ impl ClaudeRunner {
                         match &event {
                             ClaudeEvent::Assistant(asst) => {
                                 if let Some(msg) = &asst.message {
+                                    let text = msg.as_text();
                                     let _ = write_log(
                                         "CLAUDE",
-                                        &msg.chars().take(200).collect::<String>(),
+                                        &text.chars().take(200).collect::<String>(),
                                     );
                                 }
                             }
@@ -532,7 +614,35 @@ mod tests {
 
         match event {
             ClaudeEvent::Assistant(asst) => {
-                assert_eq!(asst.message, Some("Hello, world!".to_string()));
+                assert!(asst.message.is_some());
+                assert_eq!(asst.message.unwrap().as_text(), "Hello, world!");
+            }
+            _ => panic!("Expected Assistant event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_assistant_event_with_object() {
+        let json = r#"{
+            "type": "assistant",
+            "message": {
+                "model": "claude-sonnet-4-5-20250929",
+                "id": "msg_123",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Hello from Claude"},
+                    {"type": "tool_use", "id": "tool_1", "name": "Bash", "input": {"command": "ls"}}
+                ]
+            }
+        }"#;
+        let event: ClaudeEvent = serde_json::from_str(json).unwrap();
+
+        match event {
+            ClaudeEvent::Assistant(asst) => {
+                assert!(asst.message.is_some());
+                let text = asst.message.unwrap().as_text();
+                assert!(text.contains("Hello from Claude"));
+                assert!(text.contains("Bash"));
             }
             _ => panic!("Expected Assistant event"),
         }
