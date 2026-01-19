@@ -98,6 +98,59 @@ mod tui {
         pub status_message: Option<(String, Instant)>,
         /// Task to restart after dashboard exits
         pub restart_task: Option<RestartInfo>,
+        /// Log filter
+        pub log_filter: LogFilter,
+    }
+
+    /// Log filter options
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub enum LogFilter {
+        /// Show all logs
+        #[default]
+        All,
+        /// Show only INFO logs
+        Info,
+        /// Show only ERROR logs
+        Error,
+        /// Show only CLAUDE logs
+        Claude,
+        /// Show only TOOL logs
+        Tool,
+    }
+
+    impl LogFilter {
+        /// Get the display name for the filter
+        pub fn name(&self) -> &'static str {
+            match self {
+                LogFilter::All => "ALL",
+                LogFilter::Info => "INFO",
+                LogFilter::Error => "ERROR",
+                LogFilter::Claude => "CLAUDE",
+                LogFilter::Tool => "TOOL",
+            }
+        }
+
+        /// Check if a log line matches the filter
+        pub fn matches(&self, line: &str) -> bool {
+            match self {
+                LogFilter::All => true,
+                LogFilter::Info => line.contains("[INFO]"),
+                LogFilter::Error => line.contains("[ERROR]"),
+                LogFilter::Claude => line.contains("[CLAUDE]"),
+                LogFilter::Tool => line.contains("[TOOL]"),
+            }
+        }
+
+        /// Cycle to next filter
+        pub fn next(&self) -> LogFilter {
+            match self {
+                LogFilter::All => LogFilter::Info,
+                LogFilter::Info => LogFilter::Error,
+                LogFilter::Error => LogFilter::Claude,
+                LogFilter::Claude => LogFilter::Tool,
+                LogFilter::Tool => LogFilter::All,
+            }
+        }
     }
 
     /// Information needed to restart a task
@@ -131,6 +184,7 @@ mod tui {
                 log_auto_scroll: true,
                 status_message: None,
                 restart_task: None,
+                log_filter: LogFilter::default(),
             };
 
             app.load_tasks();
@@ -222,6 +276,12 @@ mod tui {
             if self.log_auto_scroll {
                 self.scroll_to_bottom();
             }
+        }
+
+        /// Cycle through log filters
+        pub fn cycle_log_filter(&mut self) {
+            self.log_filter = self.log_filter.next();
+            self.log_scroll = 0; // Reset scroll when filter changes
         }
 
         /// Scroll log up
@@ -533,6 +593,7 @@ mod tui {
                                 KeyCode::Char('q') => app.should_quit = true,
                                 KeyCode::Esc => app.back_to_list(),
                                 KeyCode::Char('f') => app.toggle_auto_scroll(),
+                                KeyCode::Tab => app.cycle_log_filter(),
                                 KeyCode::Up => app.scroll_log_up(),
                                 KeyCode::Down => app.scroll_log_down(),
                                 KeyCode::PageUp => app.scroll_log_page_up(),
@@ -897,20 +958,27 @@ mod tui {
             );
 
             let auto_scroll_text = if app.log_auto_scroll { "ON" } else { "OFF" };
+            let filter_text = app.log_filter.name();
             let status_text = if is_running {
-                format!("Running - Auto-scroll {}", auto_scroll_text)
+                format!("Running | Filter: {} | Auto-scroll: {}", filter_text, auto_scroll_text)
             } else {
-                format!("Auto-scroll {}", auto_scroll_text)
+                format!("Filter: {} | Auto-scroll: {}", filter_text, auto_scroll_text)
             };
 
             let title = format!("Logs: {} ({})", task.short_id(), status_text);
 
+            // Filter log content based on current filter
+            let filtered_content: Vec<&String> = app.log_content
+                .iter()
+                .filter(|line| app.log_filter.matches(line))
+                .collect();
+
             // Calculate visible window
             let visible_height = chunks[0].height.saturating_sub(2) as usize; // -2 for borders
-            let start_idx = app.log_scroll;
-            let end_idx = (start_idx + visible_height).min(app.log_content.len());
+            let start_idx = app.log_scroll.min(filtered_content.len().saturating_sub(1));
+            let end_idx = (start_idx + visible_height).min(filtered_content.len());
 
-            let log_lines: Vec<Line> = app.log_content[start_idx..end_idx]
+            let log_lines: Vec<Line> = filtered_content[start_idx..end_idx]
                 .iter()
                 .map(|line| {
                     // Simple syntax highlighting
@@ -943,7 +1011,7 @@ mod tui {
         }
 
         let footer = Paragraph::new(
-            "Press 'f' to toggle auto-scroll, ↑/↓ to scroll, PgUp/PgDn for pages, Esc to go back",
+            "'f' auto-scroll, Tab filter, ↑/↓ scroll, PgUp/PgDn pages, Esc back",
         )
         .style(Style::default().fg(Color::DarkGray))
         .block(Block::default().borders(Borders::ALL));
@@ -994,6 +1062,10 @@ mod tui {
             Line::from(vec![
                 Span::styled("  f         ", Style::default().fg(Color::Cyan)),
                 Span::raw("Toggle auto-scroll"),
+            ]),
+            Line::from(vec![
+                Span::styled("  Tab       ", Style::default().fg(Color::Cyan)),
+                Span::raw("Cycle log filter (ALL/INFO/ERROR/CLAUDE/TOOL)"),
             ]),
             Line::from(vec![
                 Span::styled("  ↑/↓       ", Style::default().fg(Color::Cyan)),
@@ -1460,6 +1532,76 @@ mod tests {
             // Second take should return None
             let info2 = app.take_restart();
             assert!(info2.is_none());
+        }
+
+        #[test]
+        fn test_log_filter_default() {
+            let filter = LogFilter::default();
+            assert_eq!(filter, LogFilter::All);
+            assert_eq!(filter.name(), "ALL");
+        }
+
+        #[test]
+        fn test_log_filter_matches() {
+            // All filter matches everything
+            assert!(LogFilter::All.matches("[INFO] test"));
+            assert!(LogFilter::All.matches("[ERROR] test"));
+            assert!(LogFilter::All.matches("random text"));
+
+            // Specific filters
+            assert!(LogFilter::Info.matches("[INFO] test message"));
+            assert!(!LogFilter::Info.matches("[ERROR] test message"));
+
+            assert!(LogFilter::Error.matches("[ERROR] test message"));
+            assert!(!LogFilter::Error.matches("[INFO] test message"));
+
+            assert!(LogFilter::Claude.matches("[CLAUDE] response"));
+            assert!(!LogFilter::Claude.matches("[TOOL] call"));
+
+            assert!(LogFilter::Tool.matches("[TOOL] call"));
+            assert!(!LogFilter::Tool.matches("[CLAUDE] response"));
+        }
+
+        #[test]
+        fn test_log_filter_cycle() {
+            let filter = LogFilter::All;
+            assert_eq!(filter.next(), LogFilter::Info);
+            assert_eq!(filter.next().next(), LogFilter::Error);
+            assert_eq!(filter.next().next().next(), LogFilter::Claude);
+            assert_eq!(filter.next().next().next().next(), LogFilter::Tool);
+            assert_eq!(filter.next().next().next().next().next(), LogFilter::All);
+        }
+
+        #[test]
+        fn test_app_cycle_log_filter() {
+            let mut app = App::new(false);
+
+            assert_eq!(app.log_filter, LogFilter::All);
+
+            app.cycle_log_filter();
+            assert_eq!(app.log_filter, LogFilter::Info);
+
+            app.cycle_log_filter();
+            assert_eq!(app.log_filter, LogFilter::Error);
+
+            app.cycle_log_filter();
+            assert_eq!(app.log_filter, LogFilter::Claude);
+
+            app.cycle_log_filter();
+            assert_eq!(app.log_filter, LogFilter::Tool);
+
+            app.cycle_log_filter();
+            assert_eq!(app.log_filter, LogFilter::All);
+        }
+
+        #[test]
+        fn test_cycle_log_filter_resets_scroll() {
+            let mut app = App::new(false);
+            app.log_scroll = 10;
+
+            app.cycle_log_filter();
+
+            assert_eq!(app.log_scroll, 0);
         }
     }
 }
