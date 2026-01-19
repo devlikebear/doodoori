@@ -589,6 +589,7 @@ dependencies = [
  "glob",
  "indicatif",
  "keyring",
+ "libc",
  "notify",
  "notify-debouncer-mini",
  "pulldown-cmark",
