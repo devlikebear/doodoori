@@ -96,6 +96,17 @@ mod tui {
         pub log_auto_scroll: bool,
         /// Status message to display
         pub status_message: Option<(String, Instant)>,
+        /// Task to restart after dashboard exits
+        pub restart_task: Option<RestartInfo>,
+    }
+
+    /// Information needed to restart a task
+    #[derive(Debug, Clone)]
+    pub struct RestartInfo {
+        pub prompt: String,
+        pub model: String,
+        pub max_iterations: u32,
+        pub working_dir: Option<String>,
     }
 
     impl App {
@@ -119,6 +130,7 @@ mod tui {
                 log_scroll: 0,
                 log_auto_scroll: true,
                 status_message: None,
+                restart_task: None,
             };
 
             app.load_tasks();
@@ -431,6 +443,43 @@ mod tui {
         pub fn set_status(&mut self, message: String) {
             self.status_message = Some((message, Instant::now()));
         }
+
+        /// Prepare to restart the selected task
+        pub fn prepare_restart(&mut self) {
+            if let Some(task) = self.tasks.get(self.selected_task) {
+                // Check if task is in a restartable state
+                match task.status {
+                    crate::state::TaskStatus::Running | crate::state::TaskStatus::Pending => {
+                        self.status_message = Some((
+                            format!("Task {} is still running", &task.task_id[..8]),
+                            Instant::now(),
+                        ));
+                        return;
+                    }
+                    _ => {}
+                }
+
+                // Save restart info
+                self.restart_task = Some(RestartInfo {
+                    prompt: task.prompt.clone(),
+                    model: task.model.clone(),
+                    max_iterations: task.max_iterations,
+                    working_dir: task.working_dir.clone(),
+                });
+
+                // Set quit flag to exit dashboard and restart
+                self.should_quit = true;
+                self.status_message = Some((
+                    format!("Restarting task {}...", &task.task_id[..8]),
+                    Instant::now(),
+                ));
+            }
+        }
+
+        /// Take the restart info (consumes it)
+        pub fn take_restart(&mut self) -> Option<RestartInfo> {
+            self.restart_task.take()
+        }
     }
 
     pub async fn run_dashboard(refresh_ms: u64, active_only: bool) -> Result<()> {
@@ -469,6 +518,7 @@ mod tui {
                                 KeyCode::Char('l') => app.view_logs(),
                                 KeyCode::Char('k') => app.kill_selected_task(),
                                 KeyCode::Char('p') => app.prune_stale_tasks(),
+                                KeyCode::Char('r') => app.prepare_restart(),
                                 _ => {}
                             },
                             ViewMode::TaskDetail => match key.code {
@@ -476,6 +526,7 @@ mod tui {
                                 KeyCode::Esc => app.back_to_list(),
                                 KeyCode::Char('l') => app.view_logs(),
                                 KeyCode::Char('k') => app.kill_selected_task(),
+                                KeyCode::Char('r') => app.prepare_restart(),
                                 _ => {}
                             },
                             ViewMode::LogView => match key.code {
@@ -503,6 +554,9 @@ mod tui {
             }
         }
 
+        // Check for restart before restoring terminal
+        let restart_info = app.take_restart();
+
         // Restore terminal
         disable_raw_mode()?;
         execute!(
@@ -511,6 +565,47 @@ mod tui {
             DisableMouseCapture
         )?;
         terminal.show_cursor()?;
+
+        // Execute restart if requested
+        if let Some(info) = restart_info {
+            println!("Restarting task...\n");
+
+            // Build command arguments
+            let args = vec![
+                "run".to_string(),
+                info.prompt,
+                "--model".to_string(),
+                info.model,
+                "--max-iterations".to_string(),
+                info.max_iterations.to_string(),
+            ];
+
+            // Change to working directory if specified
+            if let Some(ref dir) = info.working_dir {
+                if let Err(e) = std::env::set_current_dir(dir) {
+                    eprintln!("Warning: Could not change to working directory {}: {}", dir, e);
+                }
+            }
+
+            // Execute doodoori run
+            let status = std::process::Command::new("doodoori")
+                .args(&args)
+                .status();
+
+            match status {
+                Ok(exit_status) => {
+                    if !exit_status.success() {
+                        eprintln!("\nTask exited with status: {}", exit_status);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to restart task: {}", e);
+                    eprintln!("You can manually run:");
+                    eprintln!("  doodoori run \"{}\" --model {} --max-iterations {}",
+                        args[1], args[3], args[5]);
+                }
+            }
+        }
 
         Ok(())
     }
@@ -568,7 +663,7 @@ mod tui {
         let footer_text = if let Some((msg, _)) = &app.status_message {
             msg.clone()
         } else {
-            "Press 'q' to quit, ↑/↓ to navigate, Enter for details, 'l' for logs, 'k' to kill, 'p' to prune".to_string()
+            "'q' quit, ↑/↓ navigate, Enter details, 'l' logs, 'r' restart, 'k' kill, 'p' prune".to_string()
         };
         let footer_style = if app.status_message.is_some() {
             Style::default().fg(Color::Yellow)
@@ -782,7 +877,7 @@ mod tui {
             f.render_widget(paragraph, chunks[0]);
         }
 
-        let footer = Paragraph::new("Press 'l' for logs, 'k' to kill, Esc to go back, 'q' to quit")
+        let footer = Paragraph::new("'l' logs, 'r' restart, 'k' kill, Esc back, 'q' quit")
             .style(Style::default().fg(Color::DarkGray))
             .block(Block::default().borders(Borders::ALL));
         f.render_widget(footer, chunks[1]);
@@ -876,6 +971,10 @@ mod tui {
             Line::from(vec![
                 Span::styled("  l         ", Style::default().fg(Color::Cyan)),
                 Span::raw("View logs"),
+            ]),
+            Line::from(vec![
+                Span::styled("  r         ", Style::default().fg(Color::Cyan)),
+                Span::raw("Restart task"),
             ]),
             Line::from(vec![
                 Span::styled("  k         ", Style::default().fg(Color::Cyan)),
@@ -1225,6 +1324,142 @@ mod tests {
             app.prune_stale_tasks();
 
             assert!(app.status_message.is_some());
+        }
+
+        #[test]
+        fn test_restart_info_struct() {
+            let info = RestartInfo {
+                prompt: "Test prompt".to_string(),
+                model: "sonnet".to_string(),
+                max_iterations: 10,
+                working_dir: Some("/tmp".to_string()),
+            };
+
+            assert_eq!(info.prompt, "Test prompt");
+            assert_eq!(info.model, "sonnet");
+            assert_eq!(info.max_iterations, 10);
+            assert_eq!(info.working_dir, Some("/tmp".to_string()));
+        }
+
+        #[test]
+        fn test_prepare_restart_running_task() {
+            use crate::state::{TaskState, TaskStatus, TokenUsage};
+            use chrono::Utc;
+
+            let mut app = App::new(false);
+
+            // Create a running task
+            let task = TaskState {
+                task_id: "test-task-12345678".to_string(),
+                prompt: "Test prompt".to_string(),
+                model: "sonnet".to_string(),
+                max_iterations: 5,
+                current_iteration: 3,
+                status: TaskStatus::Running,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                duration_ms: 1000,
+                usage: TokenUsage::default(),
+                total_cost_usd: 0.0,
+                session_id: None,
+                error: None,
+                final_output: None,
+                working_dir: Some(".".to_string()),
+            };
+            app.tasks = vec![task];
+            app.selected_task = 0;
+
+            // Try to restart a running task - should not set restart_task
+            app.prepare_restart();
+
+            assert!(app.restart_task.is_none());
+            assert!(!app.should_quit);
+            assert!(app.status_message.is_some());
+            let (msg, _) = app.status_message.as_ref().unwrap();
+            assert!(msg.contains("still running"));
+        }
+
+        #[test]
+        fn test_prepare_restart_failed_task() {
+            use crate::state::{TaskState, TaskStatus, TokenUsage};
+            use chrono::Utc;
+
+            let mut app = App::new(false);
+
+            // Create a failed task
+            let task = TaskState {
+                task_id: "test-task-12345678".to_string(),
+                prompt: "Test prompt".to_string(),
+                model: "opus".to_string(),
+                max_iterations: 10,
+                current_iteration: 5,
+                status: TaskStatus::Failed,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                duration_ms: 2000,
+                usage: TokenUsage::default(),
+                total_cost_usd: 0.5,
+                session_id: None,
+                error: Some("Test error".to_string()),
+                final_output: None,
+                working_dir: Some("/project".to_string()),
+            };
+            app.tasks = vec![task];
+            app.selected_task = 0;
+
+            // Restart a failed task - should set restart_task
+            app.prepare_restart();
+
+            assert!(app.restart_task.is_some());
+            assert!(app.should_quit);
+
+            let info = app.restart_task.as_ref().unwrap();
+            assert_eq!(info.prompt, "Test prompt");
+            assert_eq!(info.model, "opus");
+            assert_eq!(info.max_iterations, 10);
+            assert_eq!(info.working_dir, Some("/project".to_string()));
+        }
+
+        #[test]
+        fn test_take_restart() {
+            use crate::state::{TaskState, TaskStatus, TokenUsage};
+            use chrono::Utc;
+
+            let mut app = App::new(false);
+
+            // Create a completed task
+            let task = TaskState {
+                task_id: "test-task-12345678".to_string(),
+                prompt: "Test prompt".to_string(),
+                model: "haiku".to_string(),
+                max_iterations: 3,
+                current_iteration: 3,
+                status: TaskStatus::Completed,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                duration_ms: 500,
+                usage: TokenUsage::default(),
+                total_cost_usd: 0.1,
+                session_id: None,
+                error: None,
+                final_output: Some("Done".to_string()),
+                working_dir: None,
+            };
+            app.tasks = vec![task];
+            app.selected_task = 0;
+
+            // Prepare restart
+            app.prepare_restart();
+            assert!(app.restart_task.is_some());
+
+            // Take restart - should consume it
+            let info = app.take_restart();
+            assert!(info.is_some());
+            assert!(app.restart_task.is_none());
+
+            // Second take should return None
+            let info2 = app.take_restart();
+            assert!(info2.is_none());
         }
     }
 }
