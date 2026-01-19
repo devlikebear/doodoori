@@ -475,7 +475,8 @@ impl LoopEngine {
                 ..Default::default()
             };
 
-            let runner = ClaudeRunner::new(claude_config);
+            let runner = ClaudeRunner::new(claude_config)
+                .with_task_id(task_id.clone());
 
             // Execute Claude
             match runner.execute(&prompt).await {
