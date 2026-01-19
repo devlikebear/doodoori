@@ -71,6 +71,10 @@ notify-debouncer-mini = "0.5"
 # Keychain (optional)
 keyring = { version = "3.6", optional = true }
 
+# Unix process control (for detached mode)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [features]
 default = []
 sandbox = ["bollard", "futures-util"]

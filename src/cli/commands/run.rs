@@ -119,6 +119,15 @@ pub struct RunArgs {
     /// Template variables (key=value format)
     #[arg(long = "var")]
     pub template_vars: Vec<String>,
+
+    /// Run task in background (detached mode)
+    /// The task will continue running even if the terminal is closed
+    #[arg(long, short = 'd')]
+    pub detach: bool,
+
+    /// Internal flag: indicates this is a detached worker process
+    #[arg(long, hide = true)]
+    pub internal_detached: bool,
 }
 
 impl RunArgs {
@@ -137,6 +146,11 @@ impl RunArgs {
     }
 
     pub async fn execute(self) -> Result<()> {
+        // Handle detached mode - spawn background worker and exit
+        if self.detach && !self.internal_detached {
+            return self.spawn_detached().await;
+        }
+
         if self.dry_run {
             return self.execute_dry_run().await;
         }
@@ -825,6 +839,180 @@ impl RunArgs {
 
         Ok(())
     }
+
+    /// Spawn a detached background process to run the task
+    async fn spawn_detached(&self) -> Result<()> {
+        use anyhow::Context;
+        use console::{style, Emoji};
+        use std::process::{Command, Stdio};
+        use uuid::Uuid;
+
+        let task_id = Uuid::new_v4().to_string()[..8].to_string();
+
+        println!(
+            "\n{} {}",
+            Emoji("🚀", ""),
+            style("Starting detached task...").bold().cyan()
+        );
+
+        // Build the command arguments
+        let mut args = vec!["run".to_string()];
+
+        // Add prompt or spec
+        if let Some(ref prompt) = self.prompt {
+            args.push(prompt.clone());
+        }
+        if let Some(ref spec) = self.spec {
+            args.push("--spec".to_string());
+            args.push(spec.clone());
+        }
+        if let Some(ref template) = self.template {
+            args.push("--template".to_string());
+            args.push(template.clone());
+        }
+
+        // Add flags
+        args.push("--model".to_string());
+        args.push(self.model.to_string());
+        args.push("--max-iterations".to_string());
+        args.push(self.max_iterations.to_string());
+
+        if let Some(budget) = self.budget {
+            args.push("--budget".to_string());
+            args.push(budget.to_string());
+        }
+        if self.sandbox {
+            args.push("--sandbox".to_string());
+            args.push("--image".to_string());
+            args.push(self.image.clone());
+            args.push("--network".to_string());
+            args.push(self.network.clone());
+        }
+        if self.yolo {
+            args.push("--yolo".to_string());
+        }
+        if self.readonly {
+            args.push("--readonly".to_string());
+        }
+        if let Some(ref allow) = self.allow {
+            args.push("--allow".to_string());
+            args.push(allow.clone());
+        }
+        if let Some(ref instr) = self.instructions {
+            args.push("--instructions".to_string());
+            args.push(instr.clone());
+        }
+        if self.no_instructions {
+            args.push("--no-instructions".to_string());
+        }
+        if self.no_git {
+            args.push("--no-git".to_string());
+        }
+        if self.no_auto_merge {
+            args.push("--no-auto-merge".to_string());
+        }
+        if self.verbose {
+            args.push("--verbose".to_string());
+        }
+        if self.no_hooks {
+            args.push("--no-hooks".to_string());
+        }
+        if self.no_notify {
+            args.push("--no-notify".to_string());
+        }
+        for var in &self.template_vars {
+            args.push("--var".to_string());
+            args.push(var.clone());
+        }
+
+        // Add internal flag to indicate this is a detached worker
+        args.push("--internal-detached".to_string());
+
+        // Get current executable path
+        let exe_path = std::env::current_exe()
+            .unwrap_or_else(|_| std::path::PathBuf::from("doodoori"));
+
+        // Get current working directory
+        let cwd = std::env::current_dir()?;
+
+        // Create log file path
+        let log_dir = cwd.join(".doodoori/logs");
+        std::fs::create_dir_all(&log_dir)?;
+        let log_path = log_dir.join(format!("{}.log", task_id));
+
+        // Open log file for stdout/stderr
+        let log_file = std::fs::File::create(&log_path)?;
+        let log_file_err = log_file.try_clone()?;
+
+        // Spawn the detached process
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+
+            let mut cmd = Command::new(&exe_path);
+            cmd.args(&args)
+                .current_dir(&cwd)
+                .stdin(Stdio::null())
+                .stdout(Stdio::from(log_file))
+                .stderr(Stdio::from(log_file_err));
+
+            // Create new session (setsid) so process survives parent death
+            unsafe {
+                cmd.pre_exec(|| {
+                    libc::setsid();
+                    Ok(())
+                });
+            }
+
+            let child = cmd.spawn().context("Failed to spawn detached process")?;
+            let pid = child.id();
+
+            println!(
+                "  Task ID:  {}",
+                style(&task_id).green().bold()
+            );
+            println!("  PID:      {}", pid);
+            println!("  Log:      {}", log_path.display());
+            println!();
+            println!(
+                "{} Task is running in the background.",
+                Emoji("✅", "")
+            );
+            println!("  Check status with: doodoori dashboard");
+            println!("  View logs with:    tail -f {}", log_path.display());
+        }
+
+        #[cfg(not(unix))]
+        {
+            // On non-Unix systems, just spawn normally (may not survive parent death)
+            let child = Command::new(&exe_path)
+                .args(&args)
+                .current_dir(&cwd)
+                .stdin(Stdio::null())
+                .stdout(Stdio::from(log_file))
+                .stderr(Stdio::from(log_file_err))
+                .spawn()
+                .context("Failed to spawn detached process")?;
+
+            let pid = child.id();
+
+            println!(
+                "  Task ID:  {}",
+                style(&task_id).green().bold()
+            );
+            println!("  PID:      {}", pid);
+            println!("  Log:      {}", log_path.display());
+            println!();
+            println!(
+                "{} Task is running in the background.",
+                Emoji("✅", "")
+            );
+            println!("  Note: On Windows, the task may not survive if this terminal is closed.");
+            println!("  Check status with: doodoori dashboard");
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -862,6 +1050,8 @@ mod tests {
                 "resource=users".to_string(),
                 "path=/api/v1".to_string(),
             ],
+            detach: false,
+            internal_detached: false,
         };
 
         let vars = args.parse_template_vars().unwrap();
@@ -896,6 +1086,8 @@ mod tests {
             output: None,
             template: None,
             template_vars: vec!["url=https://example.com/path?foo=bar".to_string()],
+            detach: false,
+            internal_detached: false,
         };
 
         let vars = args.parse_template_vars().unwrap();
@@ -932,6 +1124,8 @@ mod tests {
             output: None,
             template: None,
             template_vars: vec!["invalid_format".to_string()],
+            detach: false,
+            internal_detached: false,
         };
 
         let result = args.parse_template_vars();
@@ -969,6 +1163,8 @@ mod tests {
             output: None,
             template: None,
             template_vars: vec![],
+            detach: false,
+            internal_detached: false,
         };
 
         let vars = args.parse_template_vars().unwrap();
