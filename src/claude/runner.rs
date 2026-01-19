@@ -1,5 +1,8 @@
 use anyhow::{Context, Result};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -147,12 +150,32 @@ impl ExecutionUsage {
 #[allow(dead_code)]
 pub struct ClaudeRunner {
     config: ClaudeConfig,
+    /// Optional task ID for logging
+    task_id: Option<String>,
+    /// Optional log directory override (for testing)
+    log_dir: Option<PathBuf>,
 }
 
 #[allow(dead_code)]
 impl ClaudeRunner {
     pub fn new(config: ClaudeConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            task_id: None,
+            log_dir: None,
+        }
+    }
+
+    /// Set task ID for logging
+    pub fn with_task_id(mut self, task_id: String) -> Self {
+        self.task_id = Some(task_id);
+        self
+    }
+
+    /// Set custom log directory (mainly for testing)
+    pub fn with_log_dir(mut self, log_dir: PathBuf) -> Self {
+        self.log_dir = Some(log_dir);
+        self
     }
 
     pub fn with_model(mut self, model: ModelAlias) -> Self {
@@ -183,6 +206,28 @@ impl ClaudeRunner {
     pub fn with_system_prompt(mut self, path: PathBuf) -> Self {
         self.config.system_prompt = Some(path);
         self
+    }
+
+    /// Write a log line to the task log file
+    fn write_to_log(&self, level: &str, message: &str) -> Result<()> {
+        if let Some(ref task_id) = self.task_id {
+            let log_dir = self
+                .log_dir
+                .clone()
+                .unwrap_or_else(|| PathBuf::from(".doodoori/logs"));
+            fs::create_dir_all(&log_dir)?;
+            let log_path = log_dir.join(format!("{}.log", task_id));
+
+            let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+            let line = format!("[{}] [{}] {}", timestamp, level, message);
+
+            let mut file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_path)?;
+            writeln!(file, "{}", line)?;
+        }
+        Ok(())
     }
 
     /// Build the command arguments for Claude Code
@@ -234,10 +279,15 @@ impl ClaudeRunner {
     pub async fn execute(
         &self,
         prompt: &str,
-    ) -> Result<(mpsc::Receiver<ClaudeEvent>, tokio::task::JoinHandle<Result<ExecutionUsage>>)>
-    {
+    ) -> Result<(
+        mpsc::Receiver<ClaudeEvent>,
+        tokio::task::JoinHandle<Result<ExecutionUsage>>,
+    )> {
         let args = self.build_args(prompt);
         tracing::debug!("Executing claude with args: {:?}", args);
+
+        // Log start
+        self.write_to_log("INFO", "Starting task...")?;
 
         let mut cmd = Command::new("claude");
         cmd.args(&args)
@@ -254,10 +304,35 @@ impl ClaudeRunner {
         let stdout = child.stdout.take().context("Failed to capture stdout")?;
         let (tx, rx) = mpsc::channel(100);
 
+        // Clone task_id and log_dir for the async task
+        let task_id = self.task_id.clone();
+        let log_dir = self.log_dir.clone();
+
         let handle = tokio::spawn(async move {
             let reader = BufReader::new(stdout);
             let mut lines = reader.lines();
             let mut usage = ExecutionUsage::default();
+
+            // Helper to write logs from async context
+            let write_log = |level: &str, message: &str| -> Result<()> {
+                if let Some(ref tid) = task_id {
+                    let ld = log_dir
+                        .clone()
+                        .unwrap_or_else(|| PathBuf::from(".doodoori/logs"));
+                    fs::create_dir_all(&ld)?;
+                    let log_path = ld.join(format!("{}.log", tid));
+
+                    let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+                    let line = format!("[{}] [{}] {}", timestamp, level, message);
+
+                    let mut file = OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(log_path)?;
+                    writeln!(file, "{}", line)?;
+                }
+                Ok(())
+            };
 
             while let Ok(Some(line)) = lines.next_line().await {
                 if line.trim().is_empty() {
@@ -266,6 +341,35 @@ impl ClaudeRunner {
 
                 match serde_json::from_str::<ClaudeEvent>(&line) {
                     Ok(event) => {
+                        // Log events
+                        match &event {
+                            ClaudeEvent::Assistant(asst) => {
+                                if let Some(msg) = &asst.message {
+                                    let _ = write_log(
+                                        "CLAUDE",
+                                        &msg.chars().take(200).collect::<String>(),
+                                    );
+                                }
+                            }
+                            ClaudeEvent::ToolUse(tool) => {
+                                let _ = write_log("TOOL", &tool.tool_name);
+                            }
+                            ClaudeEvent::ToolResult(result) => {
+                                if result.is_error {
+                                    let _ =
+                                        write_log("ERROR", &format!("{} failed", result.tool_name));
+                                }
+                            }
+                            ClaudeEvent::Result(result) => {
+                                if result.is_error {
+                                    let _ = write_log("ERROR", "Task failed");
+                                } else {
+                                    let _ = write_log("INFO", "Task completed");
+                                }
+                            }
+                            _ => {}
+                        }
+
                         // Extract usage information from result events
                         if let ClaudeEvent::Result(ref result) = event {
                             if let Some(ref stats) = result.usage {
@@ -302,8 +406,10 @@ impl ClaudeRunner {
     }
 
     /// Execute Claude Code and collect all output (blocking until completion)
-    pub async fn execute_and_wait(&self, prompt: &str) -> Result<(Vec<ClaudeEvent>, ExecutionUsage)>
-    {
+    pub async fn execute_and_wait(
+        &self,
+        prompt: &str,
+    ) -> Result<(Vec<ClaudeEvent>, ExecutionUsage)> {
         let (mut rx, handle) = self.execute(prompt).await?;
         let mut events = Vec::new();
 
@@ -465,7 +571,8 @@ mod tests {
 
     #[test]
     fn test_parse_tool_use_event() {
-        let json = r#"{"type":"tool_use","tool_name":"Read","tool_input":{"file_path":"/test.txt"}}"#;
+        let json =
+            r#"{"type":"tool_use","tool_name":"Read","tool_input":{"file_path":"/test.txt"}}"#;
         let event: ClaudeEvent = serde_json::from_str(json).unwrap();
 
         match event {
@@ -497,5 +604,93 @@ mod tests {
         usage.add(&stats);
         assert_eq!(usage.input_tokens, 200);
         assert_eq!(usage.output_tokens, 100);
+    }
+
+    #[test]
+    fn test_log_file_creation() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let log_dir = dir.path().to_path_buf();
+
+        let runner = ClaudeRunner::new(ClaudeConfig::default())
+            .with_task_id("test-task-123".to_string())
+            .with_log_dir(log_dir.clone());
+
+        // Write a log entry
+        runner.write_to_log("INFO", "Test message").unwrap();
+
+        // Verify log file exists
+        let log_path = log_dir.join("test-task-123.log");
+        assert!(log_path.exists());
+
+        // Verify content
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        assert!(content.contains("[INFO]"));
+        assert!(content.contains("Test message"));
+    }
+
+    #[test]
+    fn test_log_file_append() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let log_dir = dir.path().to_path_buf();
+
+        let runner = ClaudeRunner::new(ClaudeConfig::default())
+            .with_task_id("test-task-456".to_string())
+            .with_log_dir(log_dir.clone());
+
+        // Write multiple log entries
+        runner.write_to_log("INFO", "First message").unwrap();
+        runner.write_to_log("ERROR", "Second message").unwrap();
+        runner.write_to_log("CLAUDE", "Third message").unwrap();
+
+        // Verify all entries are in the file
+        let log_path = log_dir.join("test-task-456.log");
+        let content = std::fs::read_to_string(&log_path).unwrap();
+
+        assert!(content.contains("[INFO] First message"));
+        assert!(content.contains("[ERROR] Second message"));
+        assert!(content.contains("[CLAUDE] Third message"));
+
+        // Verify lines are separate
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn test_no_log_without_task_id() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let log_dir = dir.path().to_path_buf();
+
+        let runner = ClaudeRunner::new(ClaudeConfig::default()).with_log_dir(log_dir.clone());
+
+        // Should not fail even without task_id
+        runner.write_to_log("INFO", "Test message").unwrap();
+
+        // No log file should be created
+        let entries: Vec<_> = std::fs::read_dir(&log_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert_eq!(entries.len(), 0);
+    }
+
+    #[test]
+    fn test_with_task_id_builder() {
+        let runner = ClaudeRunner::new(ClaudeConfig::default()).with_task_id("test-id".to_string());
+
+        assert_eq!(runner.task_id, Some("test-id".to_string()));
+    }
+
+    #[test]
+    fn test_with_log_dir_builder() {
+        let log_dir = PathBuf::from("/tmp/test-logs");
+        let runner = ClaudeRunner::new(ClaudeConfig::default()).with_log_dir(log_dir.clone());
+
+        assert_eq!(runner.log_dir, Some(log_dir));
     }
 }

@@ -2,6 +2,8 @@
 
 use anyhow::Result;
 use clap::{Args, Subcommand};
+#[cfg(feature = "keychain")]
+use std::io::{self, Write};
 
 /// Arguments for the secret command
 #[derive(Args, Debug)]
