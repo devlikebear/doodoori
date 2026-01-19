@@ -100,6 +100,8 @@ mod tui {
         pub restart_task: Option<RestartInfo>,
         /// Log filter
         pub log_filter: LogFilter,
+        /// Budget limit from config (USD)
+        pub budget_limit: Option<f64>,
     }
 
     /// Log filter options
@@ -169,6 +171,11 @@ mod tui {
             let state_manager = StateManager::new(&project_dir).ok();
             let cost_manager = CostHistoryManager::for_project(&project_dir).ok();
 
+            // Load budget limit from config
+            let budget_limit = crate::config::DoodooriConfig::load()
+                .ok()
+                .and_then(|c| c.budget_limit);
+
             let mut app = Self {
                 tab_index: 0,
                 tabs: vec!["Tasks", "Cost", "Help"],
@@ -185,6 +192,7 @@ mod tui {
                 status_message: None,
                 restart_task: None,
                 log_filter: LogFilter::default(),
+                budget_limit,
             };
 
             app.load_tasks();
@@ -815,25 +823,57 @@ mod tui {
             let monthly = history.get_monthly_total();
             let (input, output) = history.get_total_tokens();
 
-            let text = vec![
+            // Determine budget status and colors
+            let (monthly_color, budget_warning) = if let Some(limit) = app.budget_limit {
+                let usage_pct = (monthly / limit) * 100.0;
+                if monthly >= limit {
+                    (Color::Red, Some(format!("⚠ BUDGET EXCEEDED ({:.1}%)", usage_pct)))
+                } else if usage_pct >= 80.0 {
+                    (Color::Yellow, Some(format!("⚠ Budget warning: {:.1}% used", usage_pct)))
+                } else {
+                    (Color::Cyan, None)
+                }
+            } else {
+                (Color::Cyan, None)
+            };
+
+            let mut text = vec![
                 Line::from(vec![
                     Span::raw("All Time: "),
                     Span::styled(format!("${:.4}", total), Style::default().fg(Color::Green)),
                 ]),
                 Line::from(vec![
                     Span::raw("This Month: "),
-                    Span::styled(format!("${:.4}", monthly), Style::default().fg(Color::Cyan)),
-                ]),
-                Line::from(""),
-                Line::from(vec![
-                    Span::raw("Input Tokens: "),
-                    Span::styled(format!("{}", input), Style::default().fg(Color::Yellow)),
-                ]),
-                Line::from(vec![
-                    Span::raw("Output Tokens: "),
-                    Span::styled(format!("{}", output), Style::default().fg(Color::Yellow)),
+                    Span::styled(format!("${:.4}", monthly), Style::default().fg(monthly_color)),
                 ]),
             ];
+
+            // Add budget info
+            if let Some(limit) = app.budget_limit {
+                text.push(Line::from(vec![
+                    Span::raw("Budget:     "),
+                    Span::styled(format!("${:.2}", limit), Style::default().fg(Color::White)),
+                ]));
+            }
+
+            // Add budget warning if any
+            if let Some(warning) = budget_warning {
+                text.push(Line::from(""));
+                text.push(Line::from(Span::styled(
+                    warning,
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                )));
+            }
+
+            text.push(Line::from(""));
+            text.push(Line::from(vec![
+                Span::raw("Input Tokens: "),
+                Span::styled(format!("{}", input), Style::default().fg(Color::Yellow)),
+            ]));
+            text.push(Line::from(vec![
+                Span::raw("Output Tokens: "),
+                Span::styled(format!("{}", output), Style::default().fg(Color::Yellow)),
+            ]));
 
             let paragraph = Paragraph::new(text).block(block);
             f.render_widget(paragraph, area);
