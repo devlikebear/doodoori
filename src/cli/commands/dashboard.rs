@@ -507,7 +507,8 @@ mod tui {
             }
         }
 
-        /// Set status message
+        /// Set status message (used in tests)
+        #[allow(dead_code)]
         pub fn set_status(&mut self, message: String) {
             self.status_message = Some((message, Instant::now()));
         }
