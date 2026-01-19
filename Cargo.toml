@@ -1,6 +1,6 @@
 [package]
 name = "doodoori"
-version = "0.13.0"
+version = "0.14.0"
 edition = "2024"
 description = "Autonomous CLI tool that uses Claude Code internally to complete goals without user intervention"
 authors = ["devlikebear <devlikebear@gmail.com>"]
