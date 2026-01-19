@@ -96,6 +96,72 @@ mod tui {
         pub log_auto_scroll: bool,
         /// Status message to display
         pub status_message: Option<(String, Instant)>,
+        /// Task to restart after dashboard exits
+        pub restart_task: Option<RestartInfo>,
+        /// Log filter
+        pub log_filter: LogFilter,
+        /// Budget limit from config (USD)
+        pub budget_limit: Option<f64>,
+    }
+
+    /// Log filter options
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub enum LogFilter {
+        /// Show all logs
+        #[default]
+        All,
+        /// Show only INFO logs
+        Info,
+        /// Show only ERROR logs
+        Error,
+        /// Show only CLAUDE logs
+        Claude,
+        /// Show only TOOL logs
+        Tool,
+    }
+
+    impl LogFilter {
+        /// Get the display name for the filter
+        pub fn name(&self) -> &'static str {
+            match self {
+                LogFilter::All => "ALL",
+                LogFilter::Info => "INFO",
+                LogFilter::Error => "ERROR",
+                LogFilter::Claude => "CLAUDE",
+                LogFilter::Tool => "TOOL",
+            }
+        }
+
+        /// Check if a log line matches the filter
+        pub fn matches(&self, line: &str) -> bool {
+            match self {
+                LogFilter::All => true,
+                LogFilter::Info => line.contains("[INFO]"),
+                LogFilter::Error => line.contains("[ERROR]"),
+                LogFilter::Claude => line.contains("[CLAUDE]"),
+                LogFilter::Tool => line.contains("[TOOL]"),
+            }
+        }
+
+        /// Cycle to next filter
+        pub fn next(&self) -> LogFilter {
+            match self {
+                LogFilter::All => LogFilter::Info,
+                LogFilter::Info => LogFilter::Error,
+                LogFilter::Error => LogFilter::Claude,
+                LogFilter::Claude => LogFilter::Tool,
+                LogFilter::Tool => LogFilter::All,
+            }
+        }
+    }
+
+    /// Information needed to restart a task
+    #[derive(Debug, Clone)]
+    pub struct RestartInfo {
+        pub prompt: String,
+        pub model: String,
+        pub max_iterations: u32,
+        pub working_dir: Option<String>,
     }
 
     impl App {
@@ -104,6 +170,11 @@ mod tui {
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
             let state_manager = StateManager::new(&project_dir).ok();
             let cost_manager = CostHistoryManager::for_project(&project_dir).ok();
+
+            // Load budget limit from config
+            let budget_limit = crate::config::DoodooriConfig::load()
+                .ok()
+                .and_then(|c| c.budget_limit);
 
             let mut app = Self {
                 tab_index: 0,
@@ -119,6 +190,9 @@ mod tui {
                 log_scroll: 0,
                 log_auto_scroll: true,
                 status_message: None,
+                restart_task: None,
+                log_filter: LogFilter::default(),
+                budget_limit,
             };
 
             app.load_tasks();
@@ -210,6 +284,12 @@ mod tui {
             if self.log_auto_scroll {
                 self.scroll_to_bottom();
             }
+        }
+
+        /// Cycle through log filters
+        pub fn cycle_log_filter(&mut self) {
+            self.log_filter = self.log_filter.next();
+            self.log_scroll = 0; // Reset scroll when filter changes
         }
 
         /// Scroll log up
@@ -427,9 +507,47 @@ mod tui {
             }
         }
 
-        /// Set status message
+        /// Set status message (used in tests)
+        #[allow(dead_code)]
         pub fn set_status(&mut self, message: String) {
             self.status_message = Some((message, Instant::now()));
+        }
+
+        /// Prepare to restart the selected task
+        pub fn prepare_restart(&mut self) {
+            if let Some(task) = self.tasks.get(self.selected_task) {
+                // Check if task is in a restartable state
+                match task.status {
+                    crate::state::TaskStatus::Running | crate::state::TaskStatus::Pending => {
+                        self.status_message = Some((
+                            format!("Task {} is still running", &task.task_id[..8]),
+                            Instant::now(),
+                        ));
+                        return;
+                    }
+                    _ => {}
+                }
+
+                // Save restart info
+                self.restart_task = Some(RestartInfo {
+                    prompt: task.prompt.clone(),
+                    model: task.model.clone(),
+                    max_iterations: task.max_iterations,
+                    working_dir: task.working_dir.clone(),
+                });
+
+                // Set quit flag to exit dashboard and restart
+                self.should_quit = true;
+                self.status_message = Some((
+                    format!("Restarting task {}...", &task.task_id[..8]),
+                    Instant::now(),
+                ));
+            }
+        }
+
+        /// Take the restart info (consumes it)
+        pub fn take_restart(&mut self) -> Option<RestartInfo> {
+            self.restart_task.take()
         }
     }
 
@@ -469,6 +587,7 @@ mod tui {
                                 KeyCode::Char('l') => app.view_logs(),
                                 KeyCode::Char('k') => app.kill_selected_task(),
                                 KeyCode::Char('p') => app.prune_stale_tasks(),
+                                KeyCode::Char('r') => app.prepare_restart(),
                                 _ => {}
                             },
                             ViewMode::TaskDetail => match key.code {
@@ -476,12 +595,14 @@ mod tui {
                                 KeyCode::Esc => app.back_to_list(),
                                 KeyCode::Char('l') => app.view_logs(),
                                 KeyCode::Char('k') => app.kill_selected_task(),
+                                KeyCode::Char('r') => app.prepare_restart(),
                                 _ => {}
                             },
                             ViewMode::LogView => match key.code {
                                 KeyCode::Char('q') => app.should_quit = true,
                                 KeyCode::Esc => app.back_to_list(),
                                 KeyCode::Char('f') => app.toggle_auto_scroll(),
+                                KeyCode::Tab => app.cycle_log_filter(),
                                 KeyCode::Up => app.scroll_log_up(),
                                 KeyCode::Down => app.scroll_log_down(),
                                 KeyCode::PageUp => app.scroll_log_page_up(),
@@ -503,6 +624,9 @@ mod tui {
             }
         }
 
+        // Check for restart before restoring terminal
+        let restart_info = app.take_restart();
+
         // Restore terminal
         disable_raw_mode()?;
         execute!(
@@ -511,6 +635,47 @@ mod tui {
             DisableMouseCapture
         )?;
         terminal.show_cursor()?;
+
+        // Execute restart if requested
+        if let Some(info) = restart_info {
+            println!("Restarting task...\n");
+
+            // Build command arguments
+            let args = vec![
+                "run".to_string(),
+                info.prompt,
+                "--model".to_string(),
+                info.model,
+                "--max-iterations".to_string(),
+                info.max_iterations.to_string(),
+            ];
+
+            // Change to working directory if specified
+            if let Some(ref dir) = info.working_dir {
+                if let Err(e) = std::env::set_current_dir(dir) {
+                    eprintln!("Warning: Could not change to working directory {}: {}", dir, e);
+                }
+            }
+
+            // Execute doodoori run
+            let status = std::process::Command::new("doodoori")
+                .args(&args)
+                .status();
+
+            match status {
+                Ok(exit_status) => {
+                    if !exit_status.success() {
+                        eprintln!("\nTask exited with status: {}", exit_status);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to restart task: {}", e);
+                    eprintln!("You can manually run:");
+                    eprintln!("  doodoori run \"{}\" --model {} --max-iterations {}",
+                        args[1], args[3], args[5]);
+                }
+            }
+        }
 
         Ok(())
     }
@@ -568,7 +733,7 @@ mod tui {
         let footer_text = if let Some((msg, _)) = &app.status_message {
             msg.clone()
         } else {
-            "Press 'q' to quit, ↑/↓ to navigate, Enter for details, 'l' for logs, 'k' to kill, 'p' to prune".to_string()
+            "'q' quit, ↑/↓ navigate, Enter details, 'l' logs, 'r' restart, 'k' kill, 'p' prune".to_string()
         };
         let footer_style = if app.status_message.is_some() {
             Style::default().fg(Color::Yellow)
@@ -659,25 +824,57 @@ mod tui {
             let monthly = history.get_monthly_total();
             let (input, output) = history.get_total_tokens();
 
-            let text = vec![
+            // Determine budget status and colors
+            let (monthly_color, budget_warning) = if let Some(limit) = app.budget_limit {
+                let usage_pct = (monthly / limit) * 100.0;
+                if monthly >= limit {
+                    (Color::Red, Some(format!("⚠ BUDGET EXCEEDED ({:.1}%)", usage_pct)))
+                } else if usage_pct >= 80.0 {
+                    (Color::Yellow, Some(format!("⚠ Budget warning: {:.1}% used", usage_pct)))
+                } else {
+                    (Color::Cyan, None)
+                }
+            } else {
+                (Color::Cyan, None)
+            };
+
+            let mut text = vec![
                 Line::from(vec![
                     Span::raw("All Time: "),
                     Span::styled(format!("${:.4}", total), Style::default().fg(Color::Green)),
                 ]),
                 Line::from(vec![
                     Span::raw("This Month: "),
-                    Span::styled(format!("${:.4}", monthly), Style::default().fg(Color::Cyan)),
-                ]),
-                Line::from(""),
-                Line::from(vec![
-                    Span::raw("Input Tokens: "),
-                    Span::styled(format!("{}", input), Style::default().fg(Color::Yellow)),
-                ]),
-                Line::from(vec![
-                    Span::raw("Output Tokens: "),
-                    Span::styled(format!("{}", output), Style::default().fg(Color::Yellow)),
+                    Span::styled(format!("${:.4}", monthly), Style::default().fg(monthly_color)),
                 ]),
             ];
+
+            // Add budget info
+            if let Some(limit) = app.budget_limit {
+                text.push(Line::from(vec![
+                    Span::raw("Budget:     "),
+                    Span::styled(format!("${:.2}", limit), Style::default().fg(Color::White)),
+                ]));
+            }
+
+            // Add budget warning if any
+            if let Some(warning) = budget_warning {
+                text.push(Line::from(""));
+                text.push(Line::from(Span::styled(
+                    warning,
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                )));
+            }
+
+            text.push(Line::from(""));
+            text.push(Line::from(vec![
+                Span::raw("Input Tokens: "),
+                Span::styled(format!("{}", input), Style::default().fg(Color::Yellow)),
+            ]));
+            text.push(Line::from(vec![
+                Span::raw("Output Tokens: "),
+                Span::styled(format!("{}", output), Style::default().fg(Color::Yellow)),
+            ]));
 
             let paragraph = Paragraph::new(text).block(block);
             f.render_widget(paragraph, area);
@@ -782,7 +979,7 @@ mod tui {
             f.render_widget(paragraph, chunks[0]);
         }
 
-        let footer = Paragraph::new("Press 'l' for logs, 'k' to kill, Esc to go back, 'q' to quit")
+        let footer = Paragraph::new("'l' logs, 'r' restart, 'k' kill, Esc back, 'q' quit")
             .style(Style::default().fg(Color::DarkGray))
             .block(Block::default().borders(Borders::ALL));
         f.render_widget(footer, chunks[1]);
@@ -802,20 +999,27 @@ mod tui {
             );
 
             let auto_scroll_text = if app.log_auto_scroll { "ON" } else { "OFF" };
+            let filter_text = app.log_filter.name();
             let status_text = if is_running {
-                format!("Running - Auto-scroll {}", auto_scroll_text)
+                format!("Running | Filter: {} | Auto-scroll: {}", filter_text, auto_scroll_text)
             } else {
-                format!("Auto-scroll {}", auto_scroll_text)
+                format!("Filter: {} | Auto-scroll: {}", filter_text, auto_scroll_text)
             };
 
             let title = format!("Logs: {} ({})", task.short_id(), status_text);
 
+            // Filter log content based on current filter
+            let filtered_content: Vec<&String> = app.log_content
+                .iter()
+                .filter(|line| app.log_filter.matches(line))
+                .collect();
+
             // Calculate visible window
             let visible_height = chunks[0].height.saturating_sub(2) as usize; // -2 for borders
-            let start_idx = app.log_scroll;
-            let end_idx = (start_idx + visible_height).min(app.log_content.len());
+            let start_idx = app.log_scroll.min(filtered_content.len().saturating_sub(1));
+            let end_idx = (start_idx + visible_height).min(filtered_content.len());
 
-            let log_lines: Vec<Line> = app.log_content[start_idx..end_idx]
+            let log_lines: Vec<Line> = filtered_content[start_idx..end_idx]
                 .iter()
                 .map(|line| {
                     // Simple syntax highlighting
@@ -848,7 +1052,7 @@ mod tui {
         }
 
         let footer = Paragraph::new(
-            "Press 'f' to toggle auto-scroll, ↑/↓ to scroll, PgUp/PgDn for pages, Esc to go back",
+            "'f' auto-scroll, Tab filter, ↑/↓ scroll, PgUp/PgDn pages, Esc back",
         )
         .style(Style::default().fg(Color::DarkGray))
         .block(Block::default().borders(Borders::ALL));
@@ -878,6 +1082,10 @@ mod tui {
                 Span::raw("View logs"),
             ]),
             Line::from(vec![
+                Span::styled("  r         ", Style::default().fg(Color::Cyan)),
+                Span::raw("Restart task"),
+            ]),
+            Line::from(vec![
                 Span::styled("  k         ", Style::default().fg(Color::Cyan)),
                 Span::raw("Kill running task"),
             ]),
@@ -895,6 +1103,10 @@ mod tui {
             Line::from(vec![
                 Span::styled("  f         ", Style::default().fg(Color::Cyan)),
                 Span::raw("Toggle auto-scroll"),
+            ]),
+            Line::from(vec![
+                Span::styled("  Tab       ", Style::default().fg(Color::Cyan)),
+                Span::raw("Cycle log filter (ALL/INFO/ERROR/CLAUDE/TOOL)"),
             ]),
             Line::from(vec![
                 Span::styled("  ↑/↓       ", Style::default().fg(Color::Cyan)),
@@ -1156,6 +1368,280 @@ mod tests {
 
             app.log_content = vec![];
             app.scroll_to_bottom();
+            assert_eq!(app.log_scroll, 0);
+        }
+
+        #[test]
+        fn test_status_message() {
+            let mut app = App::new(false);
+
+            assert!(app.status_message.is_none());
+
+            app.set_status("Test message".to_string());
+            assert!(app.status_message.is_some());
+
+            let (msg, _) = app.status_message.as_ref().unwrap();
+            assert_eq!(msg, "Test message");
+        }
+
+        #[test]
+        fn test_kill_selected_task_not_running() {
+            use crate::state::{TaskState, TaskStatus, TokenUsage};
+            use chrono::Utc;
+
+            let mut app = App::new(false);
+
+            // Create a completed task
+            let task = TaskState {
+                task_id: "test-task-12345678".to_string(),
+                prompt: "Test prompt".to_string(),
+                model: "sonnet".to_string(),
+                max_iterations: 5,
+                current_iteration: 3,
+                status: TaskStatus::Completed,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                duration_ms: 1000,
+                usage: TokenUsage::default(),
+                total_cost_usd: 0.0,
+                session_id: None,
+                error: None,
+                final_output: None,
+                working_dir: Some(".".to_string()),
+            };
+            app.tasks = vec![task];
+            app.selected_task = 0;
+
+            // Try to kill a completed task - should set error message
+            app.kill_selected_task();
+
+            assert!(app.status_message.is_some());
+            let (msg, _) = app.status_message.as_ref().unwrap();
+            assert!(msg.contains("not running"));
+        }
+
+        #[test]
+        fn test_kill_selected_task_empty_list() {
+            let mut app = App::new(false);
+            app.tasks = vec![];
+
+            // Should not panic with empty task list
+            app.kill_selected_task();
+        }
+
+        #[test]
+        fn test_prune_stale_tasks_sets_message() {
+            let mut app = App::new(false);
+
+            // Prune should always set a status message
+            app.prune_stale_tasks();
+
+            assert!(app.status_message.is_some());
+        }
+
+        #[test]
+        fn test_restart_info_struct() {
+            let info = RestartInfo {
+                prompt: "Test prompt".to_string(),
+                model: "sonnet".to_string(),
+                max_iterations: 10,
+                working_dir: Some("/tmp".to_string()),
+            };
+
+            assert_eq!(info.prompt, "Test prompt");
+            assert_eq!(info.model, "sonnet");
+            assert_eq!(info.max_iterations, 10);
+            assert_eq!(info.working_dir, Some("/tmp".to_string()));
+        }
+
+        #[test]
+        fn test_prepare_restart_running_task() {
+            use crate::state::{TaskState, TaskStatus, TokenUsage};
+            use chrono::Utc;
+
+            let mut app = App::new(false);
+
+            // Create a running task
+            let task = TaskState {
+                task_id: "test-task-12345678".to_string(),
+                prompt: "Test prompt".to_string(),
+                model: "sonnet".to_string(),
+                max_iterations: 5,
+                current_iteration: 3,
+                status: TaskStatus::Running,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                duration_ms: 1000,
+                usage: TokenUsage::default(),
+                total_cost_usd: 0.0,
+                session_id: None,
+                error: None,
+                final_output: None,
+                working_dir: Some(".".to_string()),
+            };
+            app.tasks = vec![task];
+            app.selected_task = 0;
+
+            // Try to restart a running task - should not set restart_task
+            app.prepare_restart();
+
+            assert!(app.restart_task.is_none());
+            assert!(!app.should_quit);
+            assert!(app.status_message.is_some());
+            let (msg, _) = app.status_message.as_ref().unwrap();
+            assert!(msg.contains("still running"));
+        }
+
+        #[test]
+        fn test_prepare_restart_failed_task() {
+            use crate::state::{TaskState, TaskStatus, TokenUsage};
+            use chrono::Utc;
+
+            let mut app = App::new(false);
+
+            // Create a failed task
+            let task = TaskState {
+                task_id: "test-task-12345678".to_string(),
+                prompt: "Test prompt".to_string(),
+                model: "opus".to_string(),
+                max_iterations: 10,
+                current_iteration: 5,
+                status: TaskStatus::Failed,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                duration_ms: 2000,
+                usage: TokenUsage::default(),
+                total_cost_usd: 0.5,
+                session_id: None,
+                error: Some("Test error".to_string()),
+                final_output: None,
+                working_dir: Some("/project".to_string()),
+            };
+            app.tasks = vec![task];
+            app.selected_task = 0;
+
+            // Restart a failed task - should set restart_task
+            app.prepare_restart();
+
+            assert!(app.restart_task.is_some());
+            assert!(app.should_quit);
+
+            let info = app.restart_task.as_ref().unwrap();
+            assert_eq!(info.prompt, "Test prompt");
+            assert_eq!(info.model, "opus");
+            assert_eq!(info.max_iterations, 10);
+            assert_eq!(info.working_dir, Some("/project".to_string()));
+        }
+
+        #[test]
+        fn test_take_restart() {
+            use crate::state::{TaskState, TaskStatus, TokenUsage};
+            use chrono::Utc;
+
+            let mut app = App::new(false);
+
+            // Create a completed task
+            let task = TaskState {
+                task_id: "test-task-12345678".to_string(),
+                prompt: "Test prompt".to_string(),
+                model: "haiku".to_string(),
+                max_iterations: 3,
+                current_iteration: 3,
+                status: TaskStatus::Completed,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                duration_ms: 500,
+                usage: TokenUsage::default(),
+                total_cost_usd: 0.1,
+                session_id: None,
+                error: None,
+                final_output: Some("Done".to_string()),
+                working_dir: None,
+            };
+            app.tasks = vec![task];
+            app.selected_task = 0;
+
+            // Prepare restart
+            app.prepare_restart();
+            assert!(app.restart_task.is_some());
+
+            // Take restart - should consume it
+            let info = app.take_restart();
+            assert!(info.is_some());
+            assert!(app.restart_task.is_none());
+
+            // Second take should return None
+            let info2 = app.take_restart();
+            assert!(info2.is_none());
+        }
+
+        #[test]
+        fn test_log_filter_default() {
+            let filter = LogFilter::default();
+            assert_eq!(filter, LogFilter::All);
+            assert_eq!(filter.name(), "ALL");
+        }
+
+        #[test]
+        fn test_log_filter_matches() {
+            // All filter matches everything
+            assert!(LogFilter::All.matches("[INFO] test"));
+            assert!(LogFilter::All.matches("[ERROR] test"));
+            assert!(LogFilter::All.matches("random text"));
+
+            // Specific filters
+            assert!(LogFilter::Info.matches("[INFO] test message"));
+            assert!(!LogFilter::Info.matches("[ERROR] test message"));
+
+            assert!(LogFilter::Error.matches("[ERROR] test message"));
+            assert!(!LogFilter::Error.matches("[INFO] test message"));
+
+            assert!(LogFilter::Claude.matches("[CLAUDE] response"));
+            assert!(!LogFilter::Claude.matches("[TOOL] call"));
+
+            assert!(LogFilter::Tool.matches("[TOOL] call"));
+            assert!(!LogFilter::Tool.matches("[CLAUDE] response"));
+        }
+
+        #[test]
+        fn test_log_filter_cycle() {
+            let filter = LogFilter::All;
+            assert_eq!(filter.next(), LogFilter::Info);
+            assert_eq!(filter.next().next(), LogFilter::Error);
+            assert_eq!(filter.next().next().next(), LogFilter::Claude);
+            assert_eq!(filter.next().next().next().next(), LogFilter::Tool);
+            assert_eq!(filter.next().next().next().next().next(), LogFilter::All);
+        }
+
+        #[test]
+        fn test_app_cycle_log_filter() {
+            let mut app = App::new(false);
+
+            assert_eq!(app.log_filter, LogFilter::All);
+
+            app.cycle_log_filter();
+            assert_eq!(app.log_filter, LogFilter::Info);
+
+            app.cycle_log_filter();
+            assert_eq!(app.log_filter, LogFilter::Error);
+
+            app.cycle_log_filter();
+            assert_eq!(app.log_filter, LogFilter::Claude);
+
+            app.cycle_log_filter();
+            assert_eq!(app.log_filter, LogFilter::Tool);
+
+            app.cycle_log_filter();
+            assert_eq!(app.log_filter, LogFilter::All);
+        }
+
+        #[test]
+        fn test_cycle_log_filter_resets_scroll() {
+            let mut app = App::new(false);
+            app.log_scroll = 10;
+
+            app.cycle_log_filter();
+
             assert_eq!(app.log_scroll, 0);
         }
     }

@@ -8,13 +8,15 @@ mod keychain;
 pub use env_loader::EnvLoader;
 
 #[cfg(feature = "keychain")]
-pub use keychain::{KeychainManager, KeychainError};
+pub use keychain::KeychainManager;
 
 use anyhow::Result;
 use std::collections::HashMap;
 
 /// Secret value wrapper that masks itself in debug output
+/// Used when keychain feature is enabled
 #[derive(Clone)]
+#[cfg_attr(not(feature = "keychain"), allow(dead_code))]
 pub struct SecretValue(String);
 
 impl SecretValue {
@@ -22,6 +24,7 @@ impl SecretValue {
         Self(value)
     }
 
+    #[allow(dead_code)]
     pub fn expose(&self) -> &str {
         &self.0
     }
@@ -48,6 +51,8 @@ impl std::fmt::Display for SecretValue {
 }
 
 /// Unified secrets manager
+/// Note: Not yet integrated into main codebase, kept for future use
+#[allow(dead_code)]
 pub struct SecretsManager {
     env_loader: EnvLoader,
     #[cfg(feature = "keychain")]
@@ -56,6 +61,7 @@ pub struct SecretsManager {
     cache: HashMap<String, SecretValue>,
 }
 
+#[allow(dead_code)]
 impl SecretsManager {
     /// Create a new secrets manager
     pub fn new() -> Self {
