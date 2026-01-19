@@ -153,9 +153,10 @@ install:
 install-minimal:
 	cargo install --path .
 
-## Uninstall
+## Uninstall (removes both doodoori and doo binaries)
 uninstall:
-	cargo uninstall doodoori
+	cargo uninstall doodoori || true
+	@echo "Uninstalled doodoori and doo"
 
 # =============================================================================
 # Clean

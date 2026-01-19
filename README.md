@@ -35,33 +35,38 @@ Named after **Doodoori (두두리, 豆豆里)**, the Silla dynasty's blacksmith 
 # Build from source
 cargo build --release
 
-# Install globally
+# Install globally (installs both 'doodoori' and 'doo' commands)
 cargo install --path .
+
+# Or using make
+make install
 ```
+
+> **Note**: Both `doodoori` and `doo` commands are installed. Use whichever you prefer!
 
 ## Quick Start
 
 ```bash
-# Run a simple task
-doodoori run "Create a hello world REST API in Rust"
+# Run a simple task (use 'doo' or 'doodoori' - they're identical)
+doo run "Create a hello world REST API in Rust"
 
 # Use a specific model
-doodoori run -m opus "Complex architecture design task"
+doo run -m opus "Complex architecture design task"
 
 # Dry run to preview
-doodoori run --dry-run "Refactor the authentication module"
+doo run --dry-run "Refactor the authentication module"
 
 # With budget limit
-doodoori run --budget 5.0 "Implement user dashboard"
+doo run --budget 5.0 "Implement user dashboard"
 
 # YOLO mode (skip all permissions)
-doodoori run --yolo "Quick task with full permissions"
+doo run --yolo "Quick task with full permissions"
 
 # Run in Docker sandbox (requires --features sandbox)
-doodoori run --sandbox "Potentially risky operation"
+doo run --sandbox "Potentially risky operation"
 
 # Sandbox with network isolation
-doodoori run --sandbox --network none "Completely isolated execution"
+doo run --sandbox --network none "Completely isolated execution"
 ```
 
 ## Sandbox Mode
@@ -650,9 +655,11 @@ events = ["completed", "error"]
 
 ## CLI Commands
 
+> **Tip**: You can use `doo` instead of `doodoori` for all commands below.
+
 | Command | Description |
 |---------|-------------|
-| `doodoori run <prompt>` | Run a task with Claude Code |
+| `doo run <prompt>` | Run a task with Claude Code |
 | `doodoori run --spec <file.md>` | Run from a spec file |
 | `doodoori run --sandbox <prompt>` | Run in Docker sandbox |
 | `doodoori run --dry-run <prompt>` | Preview execution plan |
