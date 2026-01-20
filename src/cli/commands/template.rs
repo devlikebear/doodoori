@@ -321,6 +321,8 @@ impl TemplateUseArgs {
             template_vars: vec![],
             detach: false,
             internal_detached: false,
+            #[cfg(feature = "dashboard")]
+            dashboard: false,
         };
 
         run_args.execute().await

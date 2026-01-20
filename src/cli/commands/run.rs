@@ -128,6 +128,11 @@ pub struct RunArgs {
     /// Internal flag: indicates this is a detached worker process
     #[arg(long, hide = true)]
     pub internal_detached: bool,
+
+    /// Run with TUI dashboard for real-time monitoring
+    #[cfg(feature = "dashboard")]
+    #[arg(long)]
+    pub dashboard: bool,
 }
 
 impl RunArgs {
@@ -217,6 +222,12 @@ impl RunArgs {
 
         if self.yolo {
             tracing::warn!("YOLO mode enabled - all permissions granted!");
+        }
+
+        // Execute with Dashboard TUI if --dashboard flag is set
+        #[cfg(feature = "dashboard")]
+        if self.dashboard {
+            return self.execute_with_dashboard(&prompt, model, max_iterations).await;
         }
 
         // Execute with Loop Engine
@@ -655,6 +666,224 @@ impl RunArgs {
         )
     }
 
+    /// Execute task with TUI dashboard for real-time monitoring
+    #[cfg(feature = "dashboard")]
+    async fn execute_with_dashboard(
+        &self,
+        prompt: &str,
+        model: ModelAlias,
+        max_iterations: u32,
+    ) -> Result<()> {
+        use crossterm::{
+            event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+            execute,
+            terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+        };
+        use ratatui::{Terminal, backend::CrosstermBackend};
+        use std::io;
+        use std::time::{Duration, Instant};
+
+        use crate::notifications::{NotificationManager, NotificationsConfig};
+
+        // Build loop configuration (same as execute_loop_engine)
+        let working_dir = std::env::current_dir().ok();
+        let system_prompt = if self.no_instructions {
+            None
+        } else {
+            self.instructions.as_ref().map(PathBuf::from).or_else(|| {
+                let default_path = PathBuf::from("doodoori.md");
+                if default_path.exists() {
+                    Some(default_path)
+                } else {
+                    None
+                }
+            })
+        };
+
+        let doodoori_config = crate::config::DoodooriConfig::load().unwrap_or_default();
+        let hooks_config = doodoori_config.hooks.to_hooks_config();
+
+        let notifications_config = if let Some(ref notify_arg) = self.notify {
+            match notify_arg {
+                Some(url) => {
+                    NotificationManager::from_url(url)
+                        .map(|_| {
+                            let mut config = NotificationsConfig::default();
+                            config.enabled = true;
+                            if url.contains("hooks.slack.com") {
+                                config.slack = Some(crate::notifications::SlackConfig {
+                                    webhook_url: url.clone(),
+                                    channel: None,
+                                    username: None,
+                                    icon_emoji: None,
+                                    events: vec![
+                                        crate::notifications::NotificationEvent::Completed,
+                                        crate::notifications::NotificationEvent::Error,
+                                    ],
+                                });
+                            } else if url.contains("discord.com/api/webhooks") {
+                                config.discord = Some(crate::notifications::DiscordConfig {
+                                    webhook_url: url.clone(),
+                                    username: None,
+                                    avatar_url: None,
+                                    events: vec![
+                                        crate::notifications::NotificationEvent::Completed,
+                                        crate::notifications::NotificationEvent::Error,
+                                    ],
+                                });
+                            } else {
+                                config.webhooks.push(crate::notifications::WebhookConfig {
+                                    url: url.clone(),
+                                    method: "POST".to_string(),
+                                    headers: std::collections::HashMap::new(),
+                                    events: vec![
+                                        crate::notifications::NotificationEvent::Completed,
+                                        crate::notifications::NotificationEvent::Error,
+                                    ],
+                                    timeout_secs: 30,
+                                });
+                            }
+                            config
+                        })
+                        .unwrap_or_else(|e| {
+                            tracing::warn!("Invalid notification URL: {}", e);
+                            NotificationsConfig::default()
+                        })
+                }
+                None => {
+                    let mut config = doodoori_config.notifications.to_notifications_config();
+                    config.enabled = true;
+                    config
+                }
+            }
+        } else {
+            doodoori_config.notifications.to_notifications_config()
+        };
+
+        let loop_config = LoopConfig {
+            max_iterations,
+            budget_limit: self.budget,
+            model,
+            working_dir: working_dir.clone(),
+            yolo_mode: self.yolo,
+            readonly: self.readonly,
+            system_prompt,
+            allowed_tools: self.allow.clone(),
+            enable_state: true,
+            enable_cost_tracking: true,
+            project_dir: working_dir,
+            hooks: hooks_config,
+            disable_hooks: self.no_hooks,
+            notifications: notifications_config,
+            disable_notifications: self.no_notify,
+            ..Default::default()
+        };
+
+        // Create engine
+        let engine = LoopEngine::new(loop_config);
+
+        // Execute with live monitoring - this returns (rx, handle)
+        let (event_rx, execution_handle) = engine.execute_live(prompt).await?;
+
+        // Setup terminal
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = Terminal::new(backend)?;
+
+        // Create dashboard app with live monitoring
+        let mut app = super::dashboard::tui::App::new(false);
+        app.start_live_monitoring(event_rx, max_iterations);
+
+        // Main TUI loop
+        let tick_rate = Duration::from_millis(100);
+        let mut last_tick = Instant::now();
+
+        loop {
+            terminal.draw(|f| super::dashboard::tui::ui(f, &app))?;
+
+            let timeout = tick_rate.saturating_sub(last_tick.elapsed());
+            if event::poll(timeout)? {
+                if let Event::Key(key) = event::read()? {
+                    if key.kind == KeyEventKind::Press {
+                        match key.code {
+                            KeyCode::Char('q') => {
+                                app.should_quit = true;
+                            }
+                            KeyCode::Esc => {
+                                if !app.live_monitoring_active {
+                                    app.should_quit = true;
+                                }
+                                // If still monitoring, Esc just waits for completion
+                            }
+                            KeyCode::Up => app.scroll_live_up(),
+                            KeyCode::Down => app.scroll_live_down(),
+                            KeyCode::PageUp => app.scroll_live_page_up(),
+                            KeyCode::PageDown => app.scroll_live_page_down(),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
+            if last_tick.elapsed() >= tick_rate {
+                app.process_live_events();
+                last_tick = Instant::now();
+            }
+
+            // Exit when done and user wants to quit, or if not monitoring anymore
+            if app.should_quit || (!app.live_monitoring_active && !app.live_output_buffer.is_empty()) {
+                // Wait a moment to show final state if just completed
+                if !app.live_monitoring_active && !app.should_quit {
+                    // Give user a chance to see the final result
+                    app.process_live_events();
+                    terminal.draw(|f| super::dashboard::tui::ui(f, &app))?;
+
+                    // Wait for user to press a key to exit
+                    loop {
+                        if event::poll(Duration::from_millis(100))? {
+                            if let Event::Key(key) = event::read()? {
+                                if key.kind == KeyEventKind::Press {
+                                    break;
+                                }
+                            }
+                        }
+                        app.process_live_events();
+                        terminal.draw(|f| super::dashboard::tui::ui(f, &app))?;
+                    }
+                }
+                break;
+            }
+        }
+
+        // Restore terminal
+        disable_raw_mode()?;
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
+        terminal.show_cursor()?;
+
+        // Wait for execution to complete
+        match execution_handle.await {
+            Ok(Ok(result)) => {
+                println!("\nExecution completed: {:?}", result.status);
+                println!("Iterations: {}", result.iterations);
+                println!("Cost: ${:.4}", result.total_usage.total_cost_usd);
+            }
+            Ok(Err(e)) => {
+                eprintln!("\nExecution error: {}", e);
+            }
+            Err(e) => {
+                eprintln!("\nTask panicked: {}", e);
+            }
+        }
+
+        Ok(())
+    }
+
     async fn execute_dry_run(&self) -> Result<()> {
         println!("=== Dry Run Preview ===\n");
 
@@ -1063,6 +1292,8 @@ mod tests {
             ],
             detach: false,
             internal_detached: false,
+            #[cfg(feature = "dashboard")]
+            dashboard: false,
         };
 
         let vars = args.parse_template_vars().unwrap();
@@ -1099,6 +1330,8 @@ mod tests {
             template_vars: vec!["url=https://example.com/path?foo=bar".to_string()],
             detach: false,
             internal_detached: false,
+            #[cfg(feature = "dashboard")]
+            dashboard: false,
         };
 
         let vars = args.parse_template_vars().unwrap();
@@ -1137,6 +1370,8 @@ mod tests {
             template_vars: vec!["invalid_format".to_string()],
             detach: false,
             internal_detached: false,
+            #[cfg(feature = "dashboard")]
+            dashboard: false,
         };
 
         let result = args.parse_template_vars();
@@ -1176,6 +1411,8 @@ mod tests {
             template_vars: vec![],
             detach: false,
             internal_detached: false,
+            #[cfg(feature = "dashboard")]
+            dashboard: false,
         };
 
         let vars = args.parse_template_vars().unwrap();
