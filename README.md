@@ -67,6 +67,9 @@ doo run --sandbox "Potentially risky operation"
 
 # Sandbox with network isolation
 doo run --sandbox --network none "Completely isolated execution"
+
+# Run with live TUI dashboard (requires --features dashboard)
+doo run --dashboard "Task with real-time monitoring"
 ```
 
 ## Sandbox Mode
@@ -305,12 +308,13 @@ doodoori dashboard --active-only
 - **Tasks tab**: List all tasks with status, iterations, cost
 - **Cost tab**: Monthly/total cost summary with budget alerts
 - **Help tab**: Keyboard shortcuts reference
+- **LiveMonitor**: Real-time task execution monitoring (via EventBus)
 
 **Keyboard shortcuts:**
 
 | Key | Action |
 |-----|--------|
-| `↑/↓` | Navigate task list |
+| `↑/↓` | Navigate task list / Scroll output |
 | `Enter` | View task details |
 | `l` | View task logs |
 | `r` | Restart failed/interrupted task |
@@ -318,7 +322,8 @@ doodoori dashboard --active-only
 | `p` | Prune stale tasks |
 | `Tab` | Switch tabs / Cycle log filter |
 | `f` | Toggle auto-scroll (in log view) |
-| `Esc` | Go back |
+| `PgUp/PgDn` | Page scroll (in log/live view) |
+| `Esc` | Go back / Stop live monitoring |
 | `q` | Quit |
 
 **Log view features:**
@@ -326,6 +331,14 @@ doodoori dashboard --active-only
 - Historical logs for completed tasks
 - Log level filtering (ALL/INFO/ERROR/CLAUDE/TOOL)
 - Syntax highlighting by log level
+
+**LiveMonitor features:**
+- Real-time status, phase, and iteration tracking
+- Live token and cost statistics
+- Streaming text output with auto-scroll
+- Tool execution visualization (start/end with duration)
+- Green border indicates active monitoring
+- Syntax highlighting for tools, iterations, separators
 
 **Budget alerts:**
 - Shows budget limit from `doodoori.toml`
@@ -662,6 +675,7 @@ events = ["completed", "error"]
 | `doo run <prompt>` | Run a task with Claude Code |
 | `doodoori run --spec <file.md>` | Run from a spec file |
 | `doodoori run --sandbox <prompt>` | Run in Docker sandbox |
+| `doodoori run --dashboard <prompt>` | Run with live TUI dashboard |
 | `doodoori run --dry-run <prompt>` | Preview execution plan |
 | `doodoori parallel --task "A" --task "B"` | Run tasks in parallel |
 | `doodoori parallel --specs "*.md"` | Run spec files as parallel tasks |
@@ -771,6 +785,7 @@ doodoori spec --validate api-spec.md
 - [x] Phase 12: Output Formatters (JSON, YAML, Markdown output)
 - [x] Phase 13: Template System (pre-built and custom task templates)
 - [x] Phase 14: Enhanced Dashboard (task details, logs, kill/prune/restart, filtering, budget alerts)
+- [x] Phase 15: Real-time Event System (EventBus broadcasting, LiveMonitor view, live execution)
 
 ## License
 

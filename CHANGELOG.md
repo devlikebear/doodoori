@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] - 2026-01-19
+
+### Added
+
+- **EventBus Real-time Broadcasting System**: New event system for live TUI updates
+  - `EventBus`: Broadcast channel-based event broadcasting for multiple subscribers
+  - `LiveEvent` types: TokenDelta, CostUpdate, TextStream, ToolStart/End, IterationProgress, StatusChange
+  - `ExecutionSnapshot`: Real-time state management for UI updates
+  - `EventStats`: Statistics tracking (tokens, cost, tools executed)
+  - Token history tracking for sparkline visualization
+
+- **LoopEngine Live Execution**: Real-time execution support
+  - `execute_live()`: Execute tasks with EventBus broadcasting
+  - `run_loop_live()`: Loop execution with granular event emission
+  - `execute_with_event_bus()`: Custom event bus injection support
+  - Real-time phase tracking: Starting, Sending, Receiving, ExecutingTools, Processing, Complete
+
+- **Dashboard LiveMonitor View**: Real-time task monitoring in TUI
+  - **LiveMonitor view mode**: Watch task execution in real-time
+  - **Status panel**: Current status, phase, iteration progress
+  - **Statistics panel**: Token counts, cost, active tools
+  - **Output stream**: Live text streaming with syntax highlighting
+  - **Tool execution display**: Visual tool start/end with duration
+  - **Keyboard controls**: Scroll (↑/↓), Page (PgUp/PgDn), Stop (Esc)
+  - Auto-scroll to latest output
+  - Green border indicator for active monitoring
+
+- **Run with Dashboard Flag**: `doodoori run --dashboard` for live TUI monitoring
+  - Execute tasks with real-time TUI dashboard
+  - Monitor token usage, cost, and tool execution live
+  - See streaming output in real-time
+
+### Changed
+
+- Dashboard now supports four view modes: TaskList, TaskDetail, LogView, LiveMonitor
+- EventBus uses broadcast channels for multi-subscriber support
+- Live events processed in batches to avoid borrow conflicts
+
+### Tests
+
+- 326 unit tests (13 new tests for event_bus module)
+
 ## [0.14.0] - 2026-01-19
 
 ### Added
