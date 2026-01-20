@@ -2,13 +2,19 @@
 
 use anyhow::{Context, Result};
 use std::path::PathBuf;
-use tokio::sync::mpsc;
+use std::sync::Arc;
+use tokio::sync::{broadcast, mpsc, Mutex};
 
 use crate::claude::{ClaudeConfig, ClaudeEvent, ClaudeRunner, ExecutionUsage, ModelAlias};
 use crate::hooks::{HookContext, HookExecutor, HookType, HooksConfig};
 use crate::notifications::{NotificationEvent, NotificationManager, NotificationPayload, NotificationsConfig};
 use crate::pricing::CostHistoryManager;
 use crate::state::{StateManager, TaskState};
+
+pub mod event_bus;
+pub use event_bus::{
+    EventBus, ExecutionSnapshot, IterationPhase, LiveEvent, LiveStatus,
+};
 
 /// Completion detection strategies
 #[derive(Debug, Clone)]
@@ -278,6 +284,46 @@ impl LoopEngine {
         });
 
         Ok((rx, handle))
+    }
+
+    /// Execute the loop with live event broadcasting for real-time TUI
+    ///
+    /// Returns a broadcast receiver for LiveEvents and a handle to the task.
+    /// Multiple subscribers can receive events simultaneously.
+    pub async fn execute_live(
+        &self,
+        prompt: &str,
+    ) -> Result<(broadcast::Receiver<LiveEvent>, tokio::task::JoinHandle<Result<LoopResult>>)> {
+        let event_bus = Arc::new(Mutex::new(EventBus::new()));
+        let rx = event_bus.lock().await.subscribe();
+
+        let config = self.config.clone();
+        let prompt = prompt.to_string();
+        let event_bus_clone = Arc::clone(&event_bus);
+
+        let handle = tokio::spawn(async move {
+            let engine = LoopEngine::new(config);
+            engine.run_loop_live(&prompt, event_bus_clone).await
+        });
+
+        Ok((rx, handle))
+    }
+
+    /// Execute the loop with a custom event bus (for shared subscription)
+    pub async fn execute_with_event_bus(
+        &self,
+        prompt: &str,
+        event_bus: Arc<Mutex<EventBus>>,
+    ) -> Result<tokio::task::JoinHandle<Result<LoopResult>>> {
+        let config = self.config.clone();
+        let prompt = prompt.to_string();
+
+        let handle = tokio::spawn(async move {
+            let engine = LoopEngine::new(config);
+            engine.run_loop_live(&prompt, event_bus).await
+        });
+
+        Ok(handle)
     }
 
     /// Create hook context for the current execution state
@@ -735,6 +781,531 @@ impl LoopEngine {
         while rx.recv().await.is_some() {}
 
         handle.await.context("Task panicked")?
+    }
+
+    /// Run the loop with live event broadcasting
+    ///
+    /// This method is similar to `run_loop` but sends events through an EventBus
+    /// for real-time TUI updates. It provides more granular events like token deltas,
+    /// text streaming, and tool execution progress.
+    async fn run_loop_live(
+        &self,
+        initial_prompt: &str,
+        event_bus: Arc<Mutex<EventBus>>,
+    ) -> Result<LoopResult> {
+        let mut total_usage = ExecutionUsage::default();
+        let mut iteration = 0u32;
+        let mut previous_output: Option<String> = None;
+        let mut final_output: Option<String> = None;
+        let mut status = LoopStatus::Running;
+
+        // Send initial status
+        {
+            let mut bus = event_bus.lock().await;
+            bus.send_status_change(LiveStatus::Initializing, Some("Starting loop engine".to_string()));
+        }
+
+        // Initialize hook executor
+        let working_dir = self.config.working_dir.clone()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let hook_executor = HookExecutor::new(self.config.hooks.clone(), &working_dir);
+
+        // Initialize notification manager
+        let notification_manager = if !self.config.disable_notifications && self.config.notifications.enabled {
+            Some(NotificationManager::new(self.config.notifications.clone()))
+        } else {
+            None
+        };
+
+        // Track start time for duration calculation
+        let start_time = std::time::Instant::now();
+
+        // Initialize task state if state management is enabled
+        let mut task_state = if self.config.enable_state {
+            let state = TaskState::new(
+                initial_prompt.to_string(),
+                self.config.model.to_string(),
+                self.config.max_iterations,
+            );
+            Some(state)
+        } else {
+            None
+        };
+
+        // Get task ID for cost tracking
+        let task_id = task_state.as_ref()
+            .map(|s| s.task_id.clone())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+        // Mark task as started and save initial state
+        if let (Some(state), Some(persistence)) = (&mut task_state, &self.persistence) {
+            state.start();
+            if let Some(state_manager) = &persistence.state_manager {
+                let _ = state_manager.save_state(state);
+            }
+        }
+
+        // Send "Started" notification
+        if let Some(ref manager) = notification_manager {
+            let payload = NotificationPayload {
+                event: NotificationEvent::Started,
+                task_id: task_id.clone(),
+                prompt: initial_prompt.to_string(),
+                model: self.config.model.to_string(),
+                iterations: 0,
+                cost_usd: 0.0,
+                duration_ms: 0,
+                error: None,
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                metadata: std::collections::HashMap::new(),
+            };
+            manager.notify_silent(&payload).await;
+        }
+
+        // Execute pre_run hook
+        let pre_run_context = self.create_hook_context(
+            &task_id,
+            initial_prompt,
+            None,
+            Some(self.config.max_iterations),
+            0.0,
+            "starting",
+            None,
+        );
+        if let Err(e) = self.execute_hook_live(&hook_executor, HookType::PreRun, &pre_run_context, &event_bus).await {
+            tracing::warn!("Pre-run hook failed: {}", e);
+            status = LoopStatus::Error(format!("Pre-run hook failed: {}", e));
+
+            // Send error status
+            {
+                let mut bus = event_bus.lock().await;
+                bus.send_status_change(LiveStatus::Error, Some(e.to_string()));
+            }
+
+            // Execute on_error hook for pre_run failure
+            let error_context = self.create_hook_context(
+                &task_id,
+                initial_prompt,
+                None,
+                Some(self.config.max_iterations),
+                0.0,
+                "error",
+                Some(&e.to_string()),
+            );
+            let _ = self.execute_hook_live(&hook_executor, HookType::OnError, &error_context, &event_bus).await;
+
+            // Send loop finished event
+            {
+                let mut bus = event_bus.lock().await;
+                bus.send_loop_event(LoopEvent::LoopFinished {
+                    status: status.clone(),
+                    total_iterations: 0,
+                    total_usage: total_usage.clone(),
+                });
+            }
+
+            return Ok(LoopResult {
+                status,
+                iterations: 0,
+                total_usage,
+                final_output: None,
+            });
+        }
+
+        // Send running status
+        {
+            let mut bus = event_bus.lock().await;
+            bus.send_status_change(LiveStatus::Running, None);
+        }
+
+        while iteration < self.config.max_iterations {
+            // Check budget before starting
+            if let Some(limit) = self.config.budget_limit {
+                if total_usage.total_cost_usd >= limit {
+                    status = LoopStatus::BudgetExceeded;
+                    let mut bus = event_bus.lock().await;
+                    bus.send_status_change(LiveStatus::Finished(LoopStatus::BudgetExceeded), Some("Budget limit reached".to_string()));
+                    break;
+                }
+            }
+
+            // Send iteration started event and phase
+            {
+                let mut bus = event_bus.lock().await;
+                bus.send_loop_event(LoopEvent::IterationStarted { iteration });
+                bus.send_iteration_progress(iteration, IterationPhase::Starting);
+            }
+
+            // Build the prompt for this iteration
+            let prompt = self.build_prompt(initial_prompt, iteration, previous_output.as_deref());
+
+            // Send sending phase
+            {
+                let mut bus = event_bus.lock().await;
+                bus.send_iteration_progress(iteration, IterationPhase::Sending);
+            }
+
+            // Create Claude runner
+            let claude_config = ClaudeConfig {
+                model: self.config.model.clone(),
+                working_dir: self.config.working_dir.clone(),
+                allowed_tools: self.config.allowed_tools.clone(),
+                yolo_mode: self.config.yolo_mode,
+                readonly: self.config.readonly,
+                system_prompt: self.config.system_prompt.clone(),
+                ..Default::default()
+            };
+
+            let runner = ClaudeRunner::new(claude_config)
+                .with_task_id(task_id.clone());
+
+            // Execute Claude
+            match runner.execute(&prompt).await {
+                Ok((mut event_rx, usage_handle)) => {
+                    let mut output_buffer = String::new();
+                    let mut prev_usage = ExecutionUsage::default();
+
+                    // Send receiving phase
+                    {
+                        let mut bus = event_bus.lock().await;
+                        bus.send_iteration_progress(iteration, IterationPhase::Receiving);
+                    }
+
+                    // Forward events and collect output
+                    while let Some(event) = event_rx.recv().await {
+                        // Process different event types
+                        match &event {
+                            ClaudeEvent::Assistant(asst) => {
+                                if let Some(ref msg) = asst.message {
+                                    let text = msg.as_text();
+                                    output_buffer.push_str(&text);
+
+                                    // Send text stream event
+                                    let mut bus = event_bus.lock().await;
+                                    bus.send_text_stream(text, false);
+                                }
+                            }
+                            ClaudeEvent::ToolUse(tool) => {
+                                let mut bus = event_bus.lock().await;
+                                bus.send_iteration_progress(iteration, IterationPhase::ExecutingTools);
+                                // Use tool_name as identifier since tool_id is not available
+                                let tool_id = format!("{}-{}", tool.tool_name, uuid::Uuid::new_v4().to_string()[..8].to_string());
+                                bus.send_tool_start(tool.tool_name.clone(), tool_id);
+                            }
+                            ClaudeEvent::ToolResult(result) => {
+                                let mut bus = event_bus.lock().await;
+                                // Use tool_name as identifier since tool_id is not available
+                                bus.send_tool_end(
+                                    result.tool_name.clone(),
+                                    result.tool_name.clone(), // Use name as fallback ID
+                                    !result.is_error,
+                                    0, // Duration not available from result
+                                );
+                            }
+                            ClaudeEvent::Result(res) => {
+                                // Send token delta if usage changed
+                                if let Some(ref usage) = res.usage {
+                                    let input_delta = usage.input_tokens.saturating_sub(prev_usage.input_tokens);
+                                    let output_delta = usage.output_tokens.saturating_sub(prev_usage.output_tokens);
+
+                                    if input_delta > 0 || output_delta > 0 {
+                                        let mut bus = event_bus.lock().await;
+                                        bus.send_token_delta(input_delta, output_delta, 0, 0);
+                                    }
+
+                                    prev_usage = ExecutionUsage {
+                                        input_tokens: usage.input_tokens,
+                                        output_tokens: usage.output_tokens,
+                                        ..Default::default()
+                                    };
+                                }
+                            }
+                            _ => {}
+                        }
+
+                        // Forward the event as a loop event
+                        let mut bus = event_bus.lock().await;
+                        bus.send_loop_event(LoopEvent::ClaudeEvent(event));
+                    }
+
+                    // Send text stream complete
+                    {
+                        let mut bus = event_bus.lock().await;
+                        bus.send_text_stream(String::new(), true);
+                        bus.send_iteration_progress(iteration, IterationPhase::Processing);
+                    }
+
+                    // Get usage stats
+                    let iter_usage = usage_handle.await.context("Task panicked")??;
+
+                    // Check for completion
+                    let completed = self.is_complete(&output_buffer);
+
+                    // Calculate cost delta
+                    let cost_delta = iter_usage.total_cost_usd;
+
+                    // Send iteration completed event and cost update
+                    {
+                        let mut bus = event_bus.lock().await;
+                        bus.send_loop_event(LoopEvent::IterationCompleted {
+                            iteration,
+                            usage: iter_usage.clone(),
+                            completed,
+                        });
+                        bus.send_cost_update(total_usage.total_cost_usd + cost_delta, cost_delta);
+                        bus.send_iteration_progress(iteration, IterationPhase::Complete);
+                    }
+
+                    // Update totals
+                    total_usage.input_tokens += iter_usage.input_tokens;
+                    total_usage.output_tokens += iter_usage.output_tokens;
+                    total_usage.cache_creation_tokens += iter_usage.cache_creation_tokens;
+                    total_usage.cache_read_tokens += iter_usage.cache_read_tokens;
+                    total_usage.total_cost_usd += iter_usage.total_cost_usd;
+                    total_usage.duration_ms += iter_usage.duration_ms;
+
+                    // Update task state and save
+                    if let (Some(state), Some(persistence)) = (&mut task_state, &self.persistence) {
+                        state.update_iteration(iteration);
+                        state.update_usage(&total_usage);
+                        if let Some(state_manager) = &persistence.state_manager {
+                            let _ = state_manager.save_state(state);
+                        }
+                    }
+
+                    previous_output = Some(output_buffer.clone());
+                    final_output = Some(output_buffer);
+
+                    // Execute on_iteration hook
+                    let iter_context = self.create_hook_context(
+                        &task_id,
+                        initial_prompt,
+                        Some(iteration),
+                        Some(self.config.max_iterations),
+                        total_usage.total_cost_usd,
+                        if completed { "completed" } else { "running" },
+                        None,
+                    );
+                    let _ = self.execute_hook_live(&hook_executor, HookType::OnIteration, &iter_context, &event_bus).await;
+
+                    if completed {
+                        status = LoopStatus::Completed;
+                        let mut bus = event_bus.lock().await;
+                        bus.send_status_change(LiveStatus::Completing, Some("Task completed".to_string()));
+                        break;
+                    }
+                }
+                Err(e) => {
+                    // Send error status
+                    {
+                        let mut bus = event_bus.lock().await;
+                        bus.send_status_change(LiveStatus::Error, Some(e.to_string()));
+                    }
+
+                    // Execute on_error hook
+                    let error_context = self.create_hook_context(
+                        &task_id,
+                        initial_prompt,
+                        Some(iteration),
+                        Some(self.config.max_iterations),
+                        total_usage.total_cost_usd,
+                        "error",
+                        Some(&e.to_string()),
+                    );
+                    let _ = self.execute_hook_live(&hook_executor, HookType::OnError, &error_context, &event_bus).await;
+
+                    // Mark task as failed
+                    if let (Some(state), Some(persistence)) = (&mut task_state, &self.persistence) {
+                        state.fail(e.to_string());
+                        if let Some(state_manager) = &persistence.state_manager {
+                            let _ = state_manager.save_state(state);
+                        }
+                    }
+                    status = LoopStatus::Error(e.to_string());
+                    break;
+                }
+            }
+
+            iteration += 1;
+        }
+
+        // Check if we hit max iterations
+        if status == LoopStatus::Running {
+            status = LoopStatus::MaxIterationsReached;
+        }
+
+        // Finalize task state based on final status
+        if let Some(ref mut state) = task_state {
+            match &status {
+                LoopStatus::Completed => {
+                    state.complete(final_output.clone());
+                }
+                LoopStatus::MaxIterationsReached | LoopStatus::BudgetExceeded | LoopStatus::Stopped => {
+                    state.interrupt();
+                }
+                LoopStatus::Error(err) => {
+                    state.fail(err.clone());
+                }
+                LoopStatus::Running => {
+                    state.interrupt();
+                }
+            }
+
+            // Save final state
+            if let Some(persistence) = &self.persistence {
+                if let Some(state_manager) = &persistence.state_manager {
+                    let _ = state_manager.save_state(state);
+
+                    // Archive completed or failed tasks
+                    if matches!(status, LoopStatus::Completed | LoopStatus::Error(_)) {
+                        let _ = state_manager.archive_task(state);
+                    }
+                }
+            }
+        }
+
+        // Record total cost for the task
+        if self.config.enable_cost_tracking {
+            let project_dir = self.config.project_dir.clone()
+                .or_else(|| self.config.working_dir.clone())
+                .or_else(|| std::env::current_dir().ok());
+
+            if let Some(ref project_dir) = project_dir {
+                if let Ok(mut cost_manager) = CostHistoryManager::for_project(project_dir) {
+                    let status_str = format!("{:?}", status);
+                    let prompt_summary = if initial_prompt.len() > 50 {
+                        format!("{}...", &initial_prompt[..47])
+                    } else {
+                        initial_prompt.to_string()
+                    };
+                    let _ = cost_manager.record_cost(
+                        &task_id,
+                        &self.config.model.to_string(),
+                        total_usage.input_tokens,
+                        total_usage.output_tokens,
+                        total_usage.cache_read_tokens,
+                        total_usage.cache_creation_tokens,
+                        total_usage.total_cost_usd,
+                        &status_str,
+                        Some(prompt_summary),
+                    );
+                }
+            }
+        }
+
+        // Execute final hooks based on status
+        let final_status_str = match &status {
+            LoopStatus::Completed => "completed",
+            LoopStatus::MaxIterationsReached => "max_iterations",
+            LoopStatus::BudgetExceeded => "budget_exceeded",
+            LoopStatus::Error(_) => "error",
+            LoopStatus::Stopped => "stopped",
+            LoopStatus::Running => "running",
+        };
+
+        // Execute on_complete hook if task completed successfully
+        if status == LoopStatus::Completed {
+            let complete_context = self.create_hook_context(
+                &task_id,
+                initial_prompt,
+                Some(iteration),
+                Some(self.config.max_iterations),
+                total_usage.total_cost_usd,
+                final_status_str,
+                None,
+            );
+            let _ = self.execute_hook_live(&hook_executor, HookType::OnComplete, &complete_context, &event_bus).await;
+        }
+
+        // Execute post_run hook (always runs at the end)
+        let post_run_context = self.create_hook_context(
+            &task_id,
+            initial_prompt,
+            Some(iteration),
+            Some(self.config.max_iterations),
+            total_usage.total_cost_usd,
+            final_status_str,
+            match &status {
+                LoopStatus::Error(e) => Some(e.as_str()),
+                _ => None,
+            },
+        );
+        let _ = self.execute_hook_live(&hook_executor, HookType::PostRun, &post_run_context, &event_bus).await;
+
+        // Send final notification based on status
+        if let Some(ref manager) = notification_manager {
+            let notification_event = match &status {
+                LoopStatus::Completed => NotificationEvent::Completed,
+                LoopStatus::MaxIterationsReached => NotificationEvent::MaxIterations,
+                LoopStatus::BudgetExceeded => NotificationEvent::BudgetExceeded,
+                LoopStatus::Error(_) => NotificationEvent::Error,
+                _ => NotificationEvent::Completed,
+            };
+
+            let payload = NotificationPayload {
+                event: notification_event,
+                task_id: task_id.clone(),
+                prompt: initial_prompt.to_string(),
+                model: self.config.model.to_string(),
+                iterations: iteration + 1,
+                cost_usd: total_usage.total_cost_usd,
+                duration_ms: start_time.elapsed().as_millis() as u64,
+                error: match &status {
+                    LoopStatus::Error(e) => Some(e.clone()),
+                    _ => None,
+                },
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                metadata: std::collections::HashMap::new(),
+            };
+
+            manager.notify_silent(&payload).await;
+        }
+
+        // Send final status and loop finished event
+        {
+            let mut bus = event_bus.lock().await;
+            bus.send_status_change(LiveStatus::Finished(status.clone()), None);
+            bus.send_loop_event(LoopEvent::LoopFinished {
+                status: status.clone(),
+                total_iterations: iteration + 1,
+                total_usage: total_usage.clone(),
+            });
+        }
+
+        Ok(LoopResult {
+            status,
+            iterations: iteration + 1,
+            total_usage,
+            final_output,
+        })
+    }
+
+    /// Execute a hook and send event via EventBus
+    async fn execute_hook_live(
+        &self,
+        hook_executor: &HookExecutor,
+        hook_type: HookType,
+        context: &HookContext,
+        event_bus: &Arc<Mutex<EventBus>>,
+    ) -> Result<bool> {
+        if self.config.disable_hooks {
+            return Ok(true);
+        }
+
+        let result = hook_executor.execute_with_policy(hook_type, context).await?;
+
+        // Send hook event
+        {
+            let mut bus = event_bus.lock().await;
+            bus.send_loop_event(LoopEvent::HookExecuted {
+                hook_type,
+                success: result.success,
+                duration_ms: result.duration_ms,
+            });
+        }
+
+        Ok(result.success)
     }
 }
 
