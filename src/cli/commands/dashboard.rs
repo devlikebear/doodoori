@@ -34,7 +34,7 @@ impl DashboardArgs {
 }
 
 #[cfg(feature = "dashboard")]
-mod tui {
+pub mod tui {
     use anyhow::Result;
     use crossterm::{
         event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
@@ -54,6 +54,7 @@ mod tui {
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
+    use crate::loop_engine::{ExecutionSnapshot, LiveEvent, LiveStatus};
     use crate::pricing::CostHistoryManager;
     use crate::state::{StateManager, TaskState};
 
@@ -66,6 +67,8 @@ mod tui {
         TaskDetail,
         /// Log viewer
         LogView,
+        /// Live monitoring view (real-time execution)
+        LiveMonitor,
     }
 
     /// App state for the dashboard
@@ -102,6 +105,16 @@ mod tui {
         pub log_filter: LogFilter,
         /// Budget limit from config (USD)
         pub budget_limit: Option<f64>,
+        /// Live execution snapshot for real-time monitoring
+        pub live_snapshot: ExecutionSnapshot,
+        /// Live event receiver (for real-time updates)
+        pub live_event_rx: Option<tokio::sync::broadcast::Receiver<LiveEvent>>,
+        /// Whether live monitoring is active
+        pub live_monitoring_active: bool,
+        /// Live output buffer for streaming text
+        pub live_output_buffer: Vec<String>,
+        /// Live output scroll position
+        pub live_output_scroll: usize,
     }
 
     /// Log filter options
@@ -193,6 +206,11 @@ mod tui {
                 restart_task: None,
                 log_filter: LogFilter::default(),
                 budget_limit,
+                live_snapshot: ExecutionSnapshot::default(),
+                live_event_rx: None,
+                live_monitoring_active: false,
+                live_output_buffer: Vec::new(),
+                live_output_scroll: 0,
             };
 
             app.load_tasks();
@@ -549,6 +567,156 @@ mod tui {
         pub fn take_restart(&mut self) -> Option<RestartInfo> {
             self.restart_task.take()
         }
+
+        /// Start live monitoring with an event receiver
+        pub fn start_live_monitoring(&mut self, rx: tokio::sync::broadcast::Receiver<LiveEvent>, max_iterations: u32) {
+            self.live_event_rx = Some(rx);
+            self.live_monitoring_active = true;
+            self.live_snapshot = ExecutionSnapshot::new(max_iterations);
+            self.live_output_buffer.clear();
+            self.live_output_scroll = 0;
+            self.view_mode = ViewMode::LiveMonitor;
+        }
+
+        /// Stop live monitoring
+        pub fn stop_live_monitoring(&mut self) {
+            self.live_monitoring_active = false;
+            self.live_event_rx = None;
+            self.view_mode = ViewMode::TaskList;
+            self.load_tasks();
+        }
+
+        /// Process live events from the event bus
+        pub fn process_live_events(&mut self) {
+            // Collect events first to avoid borrow issues
+            let mut events = Vec::new();
+            let mut channel_closed = false;
+
+            if let Some(ref mut rx) = self.live_event_rx {
+                loop {
+                    match rx.try_recv() {
+                        Ok(event) => {
+                            events.push(event);
+                        }
+                        Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                        Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                            // Skip lagged events
+                            continue;
+                        }
+                        Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                            // Channel closed, stop monitoring
+                            channel_closed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Now process collected events
+            for event in events {
+                self.handle_live_event(event);
+            }
+
+            if channel_closed {
+                self.live_monitoring_active = false;
+            }
+        }
+
+        /// Handle a single live event
+        fn handle_live_event(&mut self, event: LiveEvent) {
+            // Update snapshot
+            self.live_snapshot.update(&event);
+
+            // Handle specific events for output buffer
+            match &event {
+                LiveEvent::TextStream { text, is_complete } => {
+                    if *is_complete {
+                        // Add separator for completed response
+                        if !self.live_output_buffer.is_empty() {
+                            self.live_output_buffer.push("─".repeat(40));
+                        }
+                    } else if !text.is_empty() {
+                        // Append text, handling newlines
+                        for line in text.lines() {
+                            self.live_output_buffer.push(line.to_string());
+                        }
+                        // Auto-scroll to bottom
+                        self.live_output_scroll = self.live_output_buffer.len().saturating_sub(1);
+                    }
+                }
+                LiveEvent::ToolStart { tool_name, .. } => {
+                    self.live_output_buffer.push(format!("▶ [TOOL] {}", tool_name));
+                    self.live_output_scroll = self.live_output_buffer.len().saturating_sub(1);
+                }
+                LiveEvent::ToolEnd { tool_name, success, duration_ms, .. } => {
+                    let status = if *success { "✓" } else { "✗" };
+                    self.live_output_buffer.push(format!(
+                        "  {} {} ({}ms)",
+                        status, tool_name, duration_ms
+                    ));
+                    self.live_output_scroll = self.live_output_buffer.len().saturating_sub(1);
+                }
+                LiveEvent::Loop(loop_event) => {
+                    match loop_event {
+                        crate::loop_engine::LoopEvent::IterationStarted { iteration } => {
+                            self.live_output_buffer.push(format!(
+                                "\n═══ Iteration {} ═══",
+                                iteration + 1
+                            ));
+                            self.live_output_scroll = self.live_output_buffer.len().saturating_sub(1);
+                        }
+                        crate::loop_engine::LoopEvent::LoopFinished { status, .. } => {
+                            self.live_output_buffer.push(format!(
+                                "\n═══ Finished: {:?} ═══",
+                                status
+                            ));
+                            self.live_output_scroll = self.live_output_buffer.len().saturating_sub(1);
+                        }
+                        _ => {}
+                    }
+                }
+                LiveEvent::StatusChange { status, message } => {
+                    if let Some(msg) = message {
+                        self.status_message = Some((msg.clone(), Instant::now()));
+                    }
+                    // Check if finished
+                    if matches!(status, LiveStatus::Finished(_)) {
+                        self.live_monitoring_active = false;
+                    }
+                }
+                _ => {}
+            }
+
+            // Limit buffer size
+            while self.live_output_buffer.len() > 1000 {
+                self.live_output_buffer.remove(0);
+            }
+        }
+
+        /// Scroll live output up
+        pub fn scroll_live_up(&mut self) {
+            if self.live_output_scroll > 0 {
+                self.live_output_scroll -= 1;
+            }
+        }
+
+        /// Scroll live output down
+        pub fn scroll_live_down(&mut self) {
+            if self.live_output_scroll < self.live_output_buffer.len().saturating_sub(1) {
+                self.live_output_scroll += 1;
+            }
+        }
+
+        /// Scroll live output page up
+        pub fn scroll_live_page_up(&mut self) {
+            self.live_output_scroll = self.live_output_scroll.saturating_sub(10);
+        }
+
+        /// Scroll live output page down
+        pub fn scroll_live_page_down(&mut self) {
+            self.live_output_scroll = (self.live_output_scroll + 10)
+                .min(self.live_output_buffer.len().saturating_sub(1));
+        }
     }
 
     pub async fn run_dashboard(refresh_ms: u64, active_only: bool) -> Result<()> {
@@ -578,8 +746,7 @@ mod tui {
                         match app.view_mode {
                             ViewMode::TaskList => match key.code {
                                 KeyCode::Char('q') => app.should_quit = true,
-                                KeyCode::Tab | KeyCode::Right if app.tab_index == 0 => {}
-                                KeyCode::Tab => app.next_tab(),
+                                KeyCode::Tab | KeyCode::Right => app.next_tab(),
                                 KeyCode::BackTab | KeyCode::Left => app.prev_tab(),
                                 KeyCode::Up => app.prev_task(),
                                 KeyCode::Down => app.next_task(),
@@ -609,12 +776,25 @@ mod tui {
                                 KeyCode::PageDown => app.scroll_log_page_down(),
                                 _ => {}
                             },
+                            ViewMode::LiveMonitor => match key.code {
+                                KeyCode::Char('q') => app.should_quit = true,
+                                KeyCode::Esc => app.stop_live_monitoring(),
+                                KeyCode::Up => app.scroll_live_up(),
+                                KeyCode::Down => app.scroll_live_down(),
+                                KeyCode::PageUp => app.scroll_live_page_up(),
+                                KeyCode::PageDown => app.scroll_live_page_down(),
+                                _ => {}
+                            },
                         }
                     }
                 }
             }
 
             if last_tick.elapsed() >= tick_rate {
+                // Process live events if monitoring
+                if app.view_mode == ViewMode::LiveMonitor {
+                    app.process_live_events();
+                }
                 app.refresh();
                 last_tick = Instant::now();
             }
@@ -680,12 +860,13 @@ mod tui {
         Ok(())
     }
 
-    fn ui(f: &mut Frame, app: &App) {
+    pub fn ui(f: &mut Frame, app: &App) {
         // Different layouts based on view mode
         match app.view_mode {
             ViewMode::TaskList => render_task_list_ui(f, app),
             ViewMode::TaskDetail => render_task_detail_ui(f, app),
             ViewMode::LogView => render_log_view_ui(f, app),
+            ViewMode::LiveMonitor => render_live_monitor_ui(f, app),
         }
     }
 
@@ -1057,6 +1238,141 @@ mod tui {
         .style(Style::default().fg(Color::DarkGray))
         .block(Block::default().borders(Borders::ALL));
         f.render_widget(footer, chunks[1]);
+    }
+
+    fn render_live_monitor_ui(f: &mut Frame, app: &App) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .margin(1)
+            .constraints([
+                Constraint::Length(5),  // Status/Progress area
+                Constraint::Min(0),     // Output area
+                Constraint::Length(3),  // Footer
+            ])
+            .split(f.area());
+
+        // Top: Status and progress
+        let top_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .split(chunks[0]);
+
+        // Status info
+        let snapshot = &app.live_snapshot;
+        let status_str = match &snapshot.status {
+            Some(s) => format!("{}", s),
+            None => "Starting...".to_string(),
+        };
+        let phase_str = match &snapshot.phase {
+            Some(p) => format!("{}", p),
+            None => "".to_string(),
+        };
+
+        let status_text = vec![
+            Line::from(vec![
+                Span::styled("Status: ", Style::default().fg(Color::Yellow)),
+                Span::styled(&status_str, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(vec![
+                Span::styled("Phase:  ", Style::default().fg(Color::Yellow)),
+                Span::raw(&phase_str),
+            ]),
+            Line::from(vec![
+                Span::styled("Iter:   ", Style::default().fg(Color::Yellow)),
+                Span::raw(format!("{}/{}", snapshot.iteration + 1, snapshot.max_iterations)),
+            ]),
+        ];
+
+        let status_block = Block::default()
+            .title("Live Execution")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(
+                if app.live_monitoring_active { Color::Green } else { Color::Gray }
+            ));
+        let status_paragraph = Paragraph::new(status_text).block(status_block);
+        f.render_widget(status_paragraph, top_chunks[0]);
+
+        // Stats info
+        let stats_text = vec![
+            Line::from(vec![
+                Span::styled("Tokens: ", Style::default().fg(Color::Yellow)),
+                Span::raw(format!("In: {} Out: {}", snapshot.usage.input_tokens, snapshot.usage.output_tokens)),
+            ]),
+            Line::from(vec![
+                Span::styled("Cost:   ", Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    format!("${:.4}", snapshot.usage.total_cost_usd),
+                    Style::default().fg(Color::Green),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("Tools:  ", Style::default().fg(Color::Yellow)),
+                Span::raw(format!("{} active", snapshot.active_tools.len())),
+            ]),
+        ];
+
+        let stats_block = Block::default()
+            .title("Statistics")
+            .borders(Borders::ALL);
+        let stats_paragraph = Paragraph::new(stats_text).block(stats_block);
+        f.render_widget(stats_paragraph, top_chunks[1]);
+
+        // Progress gauge (for future use)
+        let _progress_pct = if snapshot.max_iterations > 0 {
+            ((snapshot.iteration as f64 / snapshot.max_iterations as f64) * 100.0) as u16
+        } else {
+            0
+        };
+
+        // Middle: Output stream
+        let visible_height = chunks[1].height.saturating_sub(2) as usize;
+        let start_idx = app.live_output_scroll.saturating_sub(visible_height / 2);
+        let end_idx = (start_idx + visible_height).min(app.live_output_buffer.len());
+        let adjusted_start = if end_idx == app.live_output_buffer.len() {
+            app.live_output_buffer.len().saturating_sub(visible_height)
+        } else {
+            start_idx
+        };
+
+        let output_lines: Vec<Line> = app.live_output_buffer
+            .iter()
+            .skip(adjusted_start)
+            .take(visible_height)
+            .map(|line| {
+                if line.starts_with("▶ [TOOL]") {
+                    Line::from(Span::styled(line.as_str(), Style::default().fg(Color::Cyan)))
+                } else if line.starts_with("  ✓") {
+                    Line::from(Span::styled(line.as_str(), Style::default().fg(Color::Green)))
+                } else if line.starts_with("  ✗") {
+                    Line::from(Span::styled(line.as_str(), Style::default().fg(Color::Red)))
+                } else if line.starts_with("═══") {
+                    Line::from(Span::styled(line.as_str(), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)))
+                } else if line.starts_with("─") {
+                    Line::from(Span::styled(line.as_str(), Style::default().fg(Color::DarkGray)))
+                } else {
+                    Line::from(line.as_str())
+                }
+            })
+            .collect();
+
+        let monitoring_status = if app.live_monitoring_active { "● LIVE" } else { "○ Completed" };
+        let output_title = format!("Output ({} lines) {}", app.live_output_buffer.len(), monitoring_status);
+        let output_block = Block::default()
+            .title(output_title)
+            .borders(Borders::ALL);
+        let output_paragraph = Paragraph::new(output_lines).block(output_block);
+        f.render_widget(output_paragraph, chunks[1]);
+
+        // Footer
+        let footer_text = if app.live_monitoring_active {
+            "↑/↓ scroll, PgUp/PgDn pages, Esc stop & return, 'q' quit"
+        } else {
+            "Execution completed - Press Esc to return to task list"
+        };
+        let footer = Paragraph::new(footer_text)
+            .style(Style::default().fg(Color::DarkGray))
+            .block(Block::default().borders(Borders::ALL));
+        f.render_widget(footer, chunks[2]);
     }
 
     fn render_help_tab(f: &mut Frame, area: Rect) {
